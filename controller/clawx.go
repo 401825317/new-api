@@ -992,7 +992,7 @@ func ClawXRelayToken(c *gin.Context) {
 			RemainQuota:        0,
 			UnlimitedQuota:     true,
 			ModelLimitsEnabled: false,
-			Group:              "auto",
+			Group:              "",
 		}
 		if err := token.Insert(); err != nil {
 			common.ApiError(c, err)
