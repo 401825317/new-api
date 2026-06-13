@@ -228,12 +228,22 @@ func normalizeClawXAccount(req clawXAuthRequest) (account string, email string) 
 	if strings.Contains(account, "@") {
 		email = account
 	} else {
-		email = strings.TrimSpace(req.Email)
+		candidate := strings.TrimSpace(req.Email)
+		if strings.Contains(candidate, "@") {
+			email = candidate
+		}
 	}
 	return account, email
 }
 
-func buildClawXUsername(account string) string {
+func clawXApiErrorMsg(c *gin.Context, status int, msg string) {
+	c.JSON(status, gin.H{
+		"success": false,
+		"message": msg,
+	})
+}
+
+func normalizeClawXUsernameBase(account string) string {
 	base := strings.TrimSpace(account)
 	if at := strings.Index(base, "@"); at > 0 {
 		base = base[:at]
@@ -246,11 +256,16 @@ func buildClawXUsername(account string) string {
 		}
 	}
 	username := strings.Trim(b.String(), "-_")
-	if username == "" {
-		username = "clawx"
-	}
 	if len(username) > model.UserNameMaxLength {
 		username = username[:model.UserNameMaxLength]
+	}
+	return username
+}
+
+func buildClawXUsername(account string) string {
+	username := normalizeClawXUsernameBase(account)
+	if username == "" {
+		username = "clawx"
 	}
 	origin := username
 	for i := 0; ; i++ {
@@ -270,6 +285,50 @@ func buildClawXUsername(account string) string {
 			username = origin + suffix
 		}
 	}
+}
+
+func findClawXUserByLoginIdentifier(identifier string) (*model.User, error) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var user model.User
+	if err := model.DB.Where("username = ? OR email = ?", identifier, identifier).First(&user).Error; err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+func findClawXLoginUser(account string, email string, password string) (*model.User, error) {
+	candidates := []string{
+		strings.TrimSpace(account),
+		strings.TrimSpace(email),
+		normalizeClawXUsernameBase(account),
+	}
+	seen := map[string]bool{}
+	var lastErr error
+	for _, candidate := range candidates {
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		user, err := findClawXUserByLoginIdentifier(candidate)
+		if err != nil {
+			lastErr = err
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		if !common.ValidatePasswordAndHash(password, user.Password) || user.Status != common.UserStatusEnabled {
+			return nil, errors.New("invalid_credentials")
+		}
+		return user, nil
+	}
+	if lastErr != nil && !errors.Is(lastErr, gorm.ErrRecordNotFound) {
+		return nil, lastErr
+	}
+	return nil, gorm.ErrRecordNotFound
 }
 
 func clawXSessionTTLs() (int64, int64) {
@@ -468,30 +527,30 @@ func ClawXActivationCheck(c *gin.Context) {
 
 func ClawXRegister(c *gin.Context) {
 	if !common.RegisterEnabled || !common.PasswordRegisterEnabled {
-		common.ApiErrorMsg(c, "注册已关闭")
+		clawXApiErrorMsg(c, http.StatusForbidden, "注册已关闭")
 		return
 	}
 	var req clawXAuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		common.ApiErrorMsg(c, "参数错误")
+		clawXApiErrorMsg(c, http.StatusBadRequest, "参数错误")
 		return
 	}
 	account, email := normalizeClawXAccount(req)
 	if account == "" || req.Password == "" {
-		common.ApiErrorMsg(c, "账号和密码不能为空")
+		clawXApiErrorMsg(c, http.StatusBadRequest, "账号和密码不能为空")
 		return
 	}
 	if len(req.Password) < 8 || len(req.Password) > 20 {
-		common.ApiErrorMsg(c, "密码长度需为 8-20 位")
+		clawXApiErrorMsg(c, http.StatusBadRequest, "密码长度需为 8-20 位")
 		return
 	}
 	if email != "" {
 		if err := common.Validate.Var(email, "email"); err != nil {
-			common.ApiErrorMsg(c, "邮箱格式错误")
+			clawXApiErrorMsg(c, http.StatusBadRequest, "邮箱格式错误")
 			return
 		}
 		if model.IsEmailAlreadyTaken(email) {
-			common.ApiErrorMsg(c, "邮箱已被占用")
+			clawXApiErrorMsg(c, http.StatusConflict, "邮箱已被占用")
 			return
 		}
 	}
@@ -501,13 +560,13 @@ func ClawXRegister(c *gin.Context) {
 			code = strings.TrimSpace(req.VerificationCode)
 		}
 		if email == "" || code == "" || !common.VerifyCodeWithKey(email, code, common.EmailVerificationPurpose) {
-			common.ApiErrorMsg(c, "邮箱验证码错误")
+			clawXApiErrorMsg(c, http.StatusBadRequest, "邮箱验证码错误")
 			return
 		}
 	}
 	device := normalizeClawXDevice(req.Device)
 	if device.DeviceId == "" {
-		common.ApiErrorMsg(c, "缺少设备 ID")
+		clawXApiErrorMsg(c, http.StatusBadRequest, "缺少设备 ID")
 		return
 	}
 	var ticket *model.ClawXActivationTicket
@@ -516,7 +575,7 @@ func ClawXRegister(c *gin.Context) {
 		var err error
 		ticket, redemption, err = resolveClawXActivationTicket(req.ActivationTicket, req.ActivationCode, device.DeviceId)
 		if err != nil {
-			common.ApiErrorMsg(c, err.Error())
+			clawXApiErrorMsg(c, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
@@ -527,7 +586,7 @@ func ClawXRegister(c *gin.Context) {
 		return
 	}
 	if exist {
-		common.ApiErrorMsg(c, "用户已存在")
+		clawXApiErrorMsg(c, http.StatusConflict, "用户已存在")
 		return
 	}
 	var user model.User
@@ -595,22 +654,22 @@ func ClawXRegister(c *gin.Context) {
 
 func ClawXLogin(c *gin.Context) {
 	if !common.PasswordLoginEnabled {
-		common.ApiErrorMsg(c, "登录已关闭")
+		clawXApiErrorMsg(c, http.StatusForbidden, "登录已关闭")
 		return
 	}
 	var req clawXAuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		common.ApiErrorMsg(c, "参数错误")
+		clawXApiErrorMsg(c, http.StatusBadRequest, "参数错误")
 		return
 	}
-	account, _ := normalizeClawXAccount(req)
+	account, email := normalizeClawXAccount(req)
 	if account == "" || req.Password == "" {
-		common.ApiErrorMsg(c, "账号和密码不能为空")
+		clawXApiErrorMsg(c, http.StatusBadRequest, "账号和密码不能为空")
 		return
 	}
-	user := model.User{Username: account, Password: req.Password}
-	if err := user.ValidateAndFill(); err != nil {
-		common.ApiErrorMsg(c, "账号或密码错误")
+	user, err := findClawXLoginUser(account, email, req.Password)
+	if err != nil {
+		clawXApiErrorMsg(c, http.StatusUnauthorized, "账号或密码错误")
 		return
 	}
 	device, err := model.UpsertClawXDevice(user.Id, normalizeClawXDevice(req.Device))
@@ -619,7 +678,7 @@ func ClawXLogin(c *gin.Context) {
 		return
 	}
 	model.UpdateUserLastLoginAt(user.Id)
-	response, err := createClawXAuthResponse(&user, *device)
+	response, err := createClawXAuthResponse(user, *device)
 	if err != nil {
 		common.ApiError(c, err)
 		return
