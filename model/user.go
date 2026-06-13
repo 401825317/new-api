@@ -135,6 +135,7 @@ func generateDefaultSidebarConfigForRole(userRole int) string {
 			"channel":    true,
 			"models":     true,
 			"redemption": true,
+			"clawx":      false,
 			"user":       true,
 			"setting":    false, // 管理员不能访问系统设置
 		}
@@ -145,6 +146,7 @@ func generateDefaultSidebarConfigForRole(userRole int) string {
 			"channel":    true,
 			"models":     true,
 			"redemption": true,
+			"clawx":      true,
 			"user":       true,
 			"setting":    true,
 		}

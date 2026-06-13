@@ -377,6 +377,13 @@ func validateClawXRedemption(redemption *model.Redemption) error {
 	return nil
 }
 
+func clawXActivationQuota(redemption *model.Redemption) int {
+	if redemption != nil {
+		return redemption.Quota
+	}
+	return int(float64(common.GetEnvOrDefault("CLAWX_ACTIVATION_GIFT_UNITS", 5)) * common.QuotaPerUnit)
+}
+
 func resolveClawXActivationTicket(ticketOrCode string, fallbackCode string, deviceId string) (*model.ClawXActivationTicket, *model.Redemption, error) {
 	token := strings.TrimSpace(ticketOrCode)
 	if token != "" {
@@ -446,7 +453,6 @@ func ClawXActivationCheck(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	gift := float64(common.GetEnvOrDefault("CLAWX_ACTIVATION_GIFT_UNITS", 5))
 	common.ApiSuccess(c, gin.H{
 		"valid":                true,
 		"requiresRegistration": true,
@@ -454,7 +460,7 @@ func ClawXActivationCheck(c *gin.Context) {
 		"expiresIn":            expiresIn,
 		"entitlementPreview": gin.H{
 			"groupId":   "default",
-			"balance":   gift,
+			"balance":   float64(clawXActivationQuota(redemption)) / common.QuotaPerUnit,
 			"expiresAt": nil,
 		},
 	})
@@ -537,7 +543,7 @@ func ClawXRegister(c *gin.Context) {
 		if err := cleanUser.InsertWithTx(tx, 0); err != nil {
 			return err
 		}
-		giftQuota := int(float64(common.GetEnvOrDefault("CLAWX_ACTIVATION_GIFT_UNITS", 5)) * common.QuotaPerUnit)
+		giftQuota := clawXActivationQuota(redemption)
 		if giftQuota > 0 {
 			if err := tx.Model(&model.User{}).Where("id = ?", cleanUser.Id).Update("quota", gorm.Expr("quota + ?", giftQuota)).Error; err != nil {
 				return err
@@ -578,7 +584,7 @@ func ClawXRegister(c *gin.Context) {
 		return
 	}
 	user.FinalizeOAuthUserCreation(0)
-	model.RecordLog(user.Id, model.LogTypeSystem, fmt.Sprintf("ClawX 激活赠送 %s", logger.LogQuota(int(float64(common.GetEnvOrDefault("CLAWX_ACTIVATION_GIFT_UNITS", 5))*common.QuotaPerUnit))))
+	model.RecordLog(user.Id, model.LogTypeSystem, fmt.Sprintf("ClawX 激活赠送 %s", logger.LogQuota(clawXActivationQuota(redemption))))
 	response, err := createClawXAuthResponse(&user, device)
 	if err != nil {
 		common.ApiError(c, err)
@@ -1191,6 +1197,17 @@ func ClawXUpdateLatest(c *gin.Context) {
 	if channel == "" {
 		channel = "latest"
 	}
+	platform := strings.TrimSpace(c.Query("platform"))
+	if platform == "" {
+		platform = "mac"
+	}
+	if payload, ok, err := clawXLatestReleasePayload(channel, platform); err != nil {
+		common.ApiError(c, err)
+		return
+	} else if ok {
+		common.ApiSuccess(c, payload)
+		return
+	}
 	common.ApiSuccess(c, gin.H{
 		"channel":      channel,
 		"version":      clawXEnv("CLAWX_UPDATE_VERSION", ""),
@@ -1203,6 +1220,15 @@ func ClawXUpdateLatest(c *gin.Context) {
 func ClawXUpdateFeed(c *gin.Context) {
 	channel := strings.TrimSpace(c.Param("channel"))
 	file := strings.TrimPrefix(c.Param("file"), "/")
+	if platform := clawXFeedPlatform(file); platform != "" {
+		if feed, ok, err := clawXBuildUpdateFeedYAML(channel, platform); err != nil {
+			common.ApiError(c, err)
+			return
+		} else if ok {
+			c.Data(http.StatusOK, "text/yaml; charset=utf-8", []byte(feed))
+			return
+		}
+	}
 	base := strings.TrimRight(clawXEnv("CLAWX_UPDATE_BASE_URL", "https://oss.intelli-spectrum.com"), "/")
 	if channel == "" || file == "" {
 		c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "update feed not found"})

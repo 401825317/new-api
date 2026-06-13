@@ -284,6 +284,7 @@ func migrateDB() error {
 		&ClawXDevice{},
 		&ClawXSession{},
 		&ClawXActivationTicket{},
+		&ClawXRelease{},
 	)
 	if err != nil {
 		return err
@@ -336,6 +337,7 @@ func migrateDBFast() error {
 		{&ClawXDevice{}, "ClawXDevice"},
 		{&ClawXSession{}, "ClawXSession"},
 		{&ClawXActivationTicket{}, "ClawXActivationTicket"},
+		{&ClawXRelease{}, "ClawXRelease"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))

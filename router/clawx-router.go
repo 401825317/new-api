@@ -19,6 +19,17 @@ func SetClawXRouter(apiRouter *gin.RouterGroup, anonymousRequestBodyLimit gin.Ha
 		clawXRoute.GET("/updates/latest", controller.ClawXUpdateLatest)
 		clawXRoute.GET("/updates/feed/:channel/*file", controller.ClawXUpdateFeed)
 
+		adminRoute := clawXRoute.Group("/admin")
+		adminRoute.Use(middleware.RootAuth())
+		{
+			adminRoute.GET("/releases", controller.AdminListClawXReleases)
+			adminRoute.GET("/releases/preview-feed", controller.AdminPreviewClawXReleaseFeed)
+			adminRoute.GET("/releases/:id", controller.AdminGetClawXRelease)
+			adminRoute.POST("/releases", controller.AdminCreateClawXRelease)
+			adminRoute.PUT("/releases/:id", controller.AdminUpdateClawXRelease)
+			adminRoute.DELETE("/releases/:id", controller.AdminDeleteClawXRelease)
+		}
+
 		authRoute := clawXRoute.Group("/")
 		authRoute.Use(middleware.ClawXAuth())
 		{

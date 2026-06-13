@@ -26,6 +26,7 @@ import {
   LayoutDashboard,
   ListTodo,
   MessageSquare,
+  Rocket,
   Radio,
   Settings,
   Ticket,
@@ -135,6 +136,11 @@ export function useSidebarData(): SidebarData {
             title: t('Redemption Codes'),
             url: '/redemption-codes',
             icon: Ticket,
+          },
+          {
+            title: t('ClawX Versions'),
+            url: '/clawx-releases',
+            icon: Rocket,
           },
           {
             title: t('Subscription Management'),
