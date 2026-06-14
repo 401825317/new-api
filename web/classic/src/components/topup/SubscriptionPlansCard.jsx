@@ -23,6 +23,7 @@ import {
   Button,
   Card,
   Divider,
+  Modal,
   Select,
   Skeleton,
   Space,
@@ -30,6 +31,7 @@ import {
   Tooltip,
   Typography,
 } from '@douyinfe/semi-ui';
+import { QRCodeSVG } from 'qrcode.react';
 import { API, showError, showSuccess, renderQuota } from '../../helpers';
 import { getCurrencyConfig } from '../../helpers/render';
 import { RefreshCw, Sparkles } from 'lucide-react';
@@ -89,6 +91,7 @@ const SubscriptionPlansCard = ({
   const [paying, setPaying] = useState(false);
   const [selectedEpayMethod, setSelectedEpayMethod] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [qrPayment, setQrPayment] = useState(null);
 
   const epayMethods = useMemo(() => getEpayMethods(payMethods), [payMethods]);
 
@@ -181,7 +184,18 @@ const SubscriptionPlansCard = ({
         payment_method: selectedEpayMethod,
       });
       if (res.data?.message === 'success') {
-        submitEpayForm({ url: res.data.url, params: res.data.data });
+        const data = res.data.data || {};
+        const qrCode = data.qr_code || data.code_url;
+        if (qrCode) {
+          setQrPayment({
+            qrCode,
+            tradeNo: data.trade_no || data.out_trade_no,
+          });
+          showSuccess(t('请使用微信扫码支付'));
+          setOpen(false);
+          return;
+        }
+        submitEpayForm({ url: res.data.url, params: data });
         showSuccess(t('已发起支付'));
         closeBuy();
       } else {
@@ -685,6 +699,35 @@ const SubscriptionPlansCard = ({
         onPayCreem={payCreem}
         onPayEpay={payEpay}
       />
+
+      <Modal
+        title={t('微信扫码支付')}
+        visible={!!qrPayment}
+        onCancel={() => setQrPayment(null)}
+        footer={
+          <div className='flex justify-end gap-2'>
+            <Button onClick={() => setQrPayment(null)}>{t('关闭')}</Button>
+            <Button type='primary' onClick={reloadSubscriptionSelf}>
+              {t('刷新订阅')}
+            </Button>
+          </div>
+        }
+        size='small'
+        centered
+      >
+        {qrPayment && (
+          <div className='flex flex-col items-center gap-3 text-center'>
+            <div className='rounded-md border bg-white p-3'>
+              <QRCodeSVG value={qrPayment.qrCode} size={220} />
+            </div>
+            {qrPayment.tradeNo ? (
+              <div className='max-w-full break-all text-xs text-gray-500'>
+                {t('订单号')}：{qrPayment.tradeNo}
+              </div>
+            ) : null}
+          </div>
+        )}
+      </Modal>
     </>
   );
 };

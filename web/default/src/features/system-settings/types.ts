@@ -242,6 +242,15 @@ export type BillingSettings = {
   CreemWebhookSecret: string
   CreemTestMode: boolean
   CreemProducts: string
+  WxPayEnabled: boolean
+  WxPayAppID: string
+  WxPayMchID: string
+  WxPayPrivateKey: string
+  WxPayAPIv3Key: string
+  WxPayCertSerial: string
+  WxPayPublicKey: string
+  WxPayPublicKeyID: string
+  WxPayNotifyURL: string
   WaffoEnabled: boolean
   WaffoApiKey: string
   WaffoPrivateKey: string

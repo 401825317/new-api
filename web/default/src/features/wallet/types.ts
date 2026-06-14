@@ -38,6 +38,15 @@ export type AmountResponse = ApiResponse<string>
 export type PaymentResponse = ApiResponse<Record<string, unknown>> & {
   url?: string
 }
+export type QrPaymentResponseData = {
+  qr_code?: string
+  code_url?: string
+  trade_no?: string
+  out_trade_no?: string
+  money?: string
+  payment_type?: string
+  expires_at?: number
+}
 export type StripePaymentResponse = ApiResponse<{ pay_link: string }>
 export type AffiliateCodeResponse = ApiResponse<string>
 export type AffiliateTransferResponse = ApiResponse
@@ -150,6 +159,8 @@ export interface TopupInfo {
   enable_waffo_pancake_topup?: boolean
   /** Minimum topup amount for Waffo Pancake */
   waffo_pancake_min_topup?: number
+  /** Whether official WeChat Pay topup is enabled */
+  enable_wxpay_topup?: boolean
   /** Whether redemption code usage is enabled */
   enable_redemption?: boolean
   /** Whether compliance confirmation has been completed */

@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useState, useCallback } from 'react'
 import i18next from 'i18next'
 import { toast } from 'sonner'
+import type { QrPaymentPayload } from '@/components/qr-payment-dialog'
 import {
   calculateAmount,
   calculateStripeAmount,
@@ -32,15 +33,21 @@ import {
   isWaffoPancakePayment,
   submitPaymentForm,
 } from '../lib'
+import type { QrPaymentResponseData } from '../types'
 
 // ============================================================================
 // Payment Hook
 // ============================================================================
 
-export function usePayment() {
+type UsePaymentOptions = {
+  onQrPayment?: (payload: QrPaymentPayload) => void
+}
+
+export function usePayment(options?: UsePaymentOptions) {
   const [amount, setAmount] = useState<number>(0)
   const [calculating, setCalculating] = useState(false)
   const [processing, setProcessing] = useState(false)
+  const onQrPayment = options?.onQrPayment
 
   // Calculate payment amount
   const calculatePaymentAmount = useCallback(
@@ -108,6 +115,20 @@ export function usePayment() {
 
         // Handle non-Stripe payment
         if (!isStripe && response.data) {
+          const qrData = response.data as QrPaymentResponseData
+          const qrCode = qrData.qr_code || qrData.code_url
+          if (qrCode) {
+            onQrPayment?.({
+              qrCode,
+              tradeNo: qrData.trade_no || qrData.out_trade_no,
+              amount: qrData.money,
+              paymentType: qrData.payment_type,
+              expiresAt: qrData.expires_at,
+            })
+            toast.success(i18next.t('Scan the QR code to pay'))
+            return true
+          }
+
           const url = (response as unknown as { url?: string }).url
           if (url) {
             submitPaymentForm(url, response.data)
@@ -124,7 +145,7 @@ export function usePayment() {
         setProcessing(false)
       }
     },
-    []
+    [onQrPayment]
   )
 
   return {

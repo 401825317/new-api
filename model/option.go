@@ -91,6 +91,15 @@ func InitOptionMap() {
 	common.OptionMap["CreemProducts"] = setting.CreemProducts
 	common.OptionMap["CreemTestMode"] = strconv.FormatBool(setting.CreemTestMode)
 	common.OptionMap["CreemWebhookSecret"] = setting.CreemWebhookSecret
+	common.OptionMap["WxPayEnabled"] = strconv.FormatBool(setting.WxPayEnabled)
+	common.OptionMap["WxPayAppID"] = setting.WxPayAppID
+	common.OptionMap["WxPayMchID"] = setting.WxPayMchID
+	common.OptionMap["WxPayPrivateKey"] = setting.WxPayPrivateKey
+	common.OptionMap["WxPayAPIv3Key"] = setting.WxPayAPIv3Key
+	common.OptionMap["WxPayCertSerial"] = setting.WxPayCertSerial
+	common.OptionMap["WxPayPublicKey"] = setting.WxPayPublicKey
+	common.OptionMap["WxPayPublicKeyID"] = setting.WxPayPublicKeyID
+	common.OptionMap["WxPayNotifyURL"] = setting.WxPayNotifyURL
 	common.OptionMap["WaffoEnabled"] = strconv.FormatBool(setting.WaffoEnabled)
 	common.OptionMap["WaffoApiKey"] = setting.WaffoApiKey
 	common.OptionMap["WaffoPrivateKey"] = setting.WaffoPrivateKey
@@ -418,6 +427,24 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.CreemTestMode = value == "true"
 	case "CreemWebhookSecret":
 		setting.CreemWebhookSecret = value
+	case "WxPayEnabled":
+		setting.WxPayEnabled = value == "true"
+	case "WxPayAppID":
+		setting.WxPayAppID = value
+	case "WxPayMchID":
+		setting.WxPayMchID = value
+	case "WxPayPrivateKey":
+		setting.WxPayPrivateKey = value
+	case "WxPayAPIv3Key":
+		setting.WxPayAPIv3Key = value
+	case "WxPayCertSerial":
+		setting.WxPayCertSerial = value
+	case "WxPayPublicKey":
+		setting.WxPayPublicKey = value
+	case "WxPayPublicKeyID":
+		setting.WxPayPublicKeyID = value
+	case "WxPayNotifyURL":
+		setting.WxPayNotifyURL = value
 	case "WaffoEnabled":
 		setting.WaffoEnabled = value == "true"
 	case "WaffoApiKey":

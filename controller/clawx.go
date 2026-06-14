@@ -904,10 +904,7 @@ func ClawXRelayToken(c *gin.Context) {
 
 func clawXTopupOverviewPayload(user *model.User) gin.H {
 	complianceConfirmed := operation_setting.IsPaymentComplianceConfirmed()
-	payMethods := operation_setting.PayMethods
-	if !complianceConfirmed {
-		payMethods = []map[string]string{}
-	}
+	payMethods := buildAvailableStandardPayMethods()
 	methods := make([]gin.H, 0, len(payMethods))
 	for _, method := range payMethods {
 		methodType := strings.TrimSpace(method["type"])
@@ -937,7 +934,7 @@ func clawXTopupOverviewPayload(user *model.User) gin.H {
 		"topupInfo": gin.H{
 			"payg_current_quota":      user.Quota,
 			"payg_credit_usd_per_cny": 1,
-			"enable_online_topup":     complianceConfirmed && isEpayTopUpEnabled() && len(methods) > 0,
+			"enable_online_topup":     complianceConfirmed && len(methods) > 0,
 			"pay_methods":             common.GetJsonString(methods),
 			"payg_products": []gin.H{{
 				"id":                1,
@@ -1022,8 +1019,16 @@ func ClawXBillingCreateOrder(c *gin.Context) {
 		common.ApiErrorMsg(c, "缺少支付方式")
 		return
 	}
-	if !operation_setting.ContainsPayMethod(paymentType) {
+	if !isStandardPaymentMethodAvailable(paymentType) {
 		common.ApiErrorMsg(c, "支付方式不存在")
+		return
+	}
+	if isWxPayMethod(paymentType) && isWxPayTopUpEnabled() {
+		if orderType == "subscription" {
+			createClawXWxPaySubscriptionOrder(c, req)
+		} else {
+			createClawXWxPayBalanceOrder(c, req)
+		}
 		return
 	}
 	switch orderType {

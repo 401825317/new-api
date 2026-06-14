@@ -100,6 +100,11 @@ export interface SubscriptionPayResponse {
     pay_link?: string
     // Waffo Pancake / Creem hosted checkout URL.
     checkout_url?: string
+    qr_code?: string
+    code_url?: string
+    trade_no?: string
+    out_trade_no?: string
+    payment_type?: string
     // Pancake-only: order metadata + self-service buyer session token,
     // surfaced for future flows (refund / cancel from new-api's own UI).
     session_id?: string

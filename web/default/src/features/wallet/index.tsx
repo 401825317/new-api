@@ -22,6 +22,10 @@ import { getSelf } from '@/lib/api'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { SectionPageLayout } from '@/components/layout'
+import {
+  QrPaymentDialog,
+  type QrPaymentPayload,
+} from '@/components/qr-payment-dialog'
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
 import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
@@ -73,6 +77,7 @@ export function Wallet(props: WalletProps) {
   const [selectedCreemProduct, setSelectedCreemProduct] =
     useState<CreemProduct | null>(null)
   const [showSubscriptionPanel, setShowSubscriptionPanel] = useState(true)
+  const [qrPayment, setQrPayment] = useState<QrPaymentPayload | null>(null)
 
   const { status } = useStatus()
   const { currency } = useSystemConfig()
@@ -90,7 +95,7 @@ export function Wallet(props: WalletProps) {
     processing,
     calculatePaymentAmount,
     processPayment,
-  } = usePayment()
+  } = usePayment({ onQrPayment: setQrPayment })
   const {
     affiliateLink,
     loading: affiliateLoading,
@@ -359,6 +364,16 @@ export function Wallet(props: WalletProps) {
         onConfirm={handleCreemConfirm}
         product={selectedCreemProduct}
         processing={creemProcessing}
+      />
+
+      <QrPaymentDialog
+        open={!!qrPayment}
+        onOpenChange={(open) => {
+          if (!open) setQrPayment(null)
+        }}
+        payload={qrPayment}
+        onRefresh={fetchUser}
+        onConfirmed={fetchUser}
       />
     </>
   )

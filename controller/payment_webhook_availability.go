@@ -92,6 +92,30 @@ func isWaffoPancakeWebhookEnabled() bool {
 	return isWaffoPancakeTopUpEnabled()
 }
 
+func isWxPayTopUpEnabled() bool {
+	if !isPaymentComplianceConfirmed() {
+		return false
+	}
+	if !setting.WxPayEnabled {
+		return false
+	}
+	return isWxPayWebhookConfigured()
+}
+
+func isWxPayWebhookConfigured() bool {
+	return strings.TrimSpace(setting.WxPayAppID) != "" &&
+		strings.TrimSpace(setting.WxPayMchID) != "" &&
+		strings.TrimSpace(setting.WxPayPrivateKey) != "" &&
+		len(strings.TrimSpace(setting.WxPayAPIv3Key)) == wxPayAPIv3KeyLength &&
+		strings.TrimSpace(setting.WxPayCertSerial) != "" &&
+		strings.TrimSpace(setting.WxPayPublicKey) != "" &&
+		strings.TrimSpace(setting.WxPayPublicKeyID) != ""
+}
+
+func isWxPayWebhookEnabled() bool {
+	return isWxPayTopUpEnabled()
+}
+
 func isEpayTopUpEnabled() bool {
 	if !isPaymentComplianceConfirmed() {
 		return false

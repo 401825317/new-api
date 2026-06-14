@@ -29,8 +29,9 @@ import {
   copy,
   getQuotaPerUnit,
 } from '../../helpers';
-import { Modal, Toast } from '@douyinfe/semi-ui';
+import { Button, Modal, Toast } from '@douyinfe/semi-ui';
 import { useTranslation } from 'react-i18next';
+import { QRCodeSVG } from 'qrcode.react';
 import { UserContext } from '../../context/User';
 import { StatusContext } from '../../context/Status';
 
@@ -100,6 +101,7 @@ const TopUp = () => {
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [confirmLoading, setConfirmLoading] = useState(false);
   const [payMethods, setPayMethods] = useState([]);
+  const [qrPayment, setQrPayment] = useState(null);
 
   const affFetchedRef = useRef(false);
 
@@ -313,6 +315,17 @@ const TopUp = () => {
             // Stripe 支付回调处理
             window.open(data.pay_link, '_blank');
           } else {
+            const qrCode = data?.qr_code || data?.code_url;
+            if (qrCode) {
+              setQrPayment({
+                qrCode,
+                tradeNo: data?.trade_no || data?.out_trade_no,
+                amount: data?.money,
+              });
+              showSuccess(t('请使用微信扫码支付'));
+              return;
+            }
+
             // 普通支付表单提交
             let params = data;
             let url = res.data.url;
@@ -966,6 +979,40 @@ const TopUp = () => {
             </p>
             <p>{t('是否确认充值？')}</p>
           </>
+        )}
+      </Modal>
+
+      <Modal
+        title={t('微信扫码支付')}
+        visible={!!qrPayment}
+        onCancel={() => setQrPayment(null)}
+        footer={
+          <div className='flex justify-end gap-2'>
+            <Button onClick={() => setQrPayment(null)}>{t('关闭')}</Button>
+            <Button type='primary' onClick={getUserQuota}>
+              {t('刷新余额')}
+            </Button>
+          </div>
+        }
+        size='small'
+        centered
+      >
+        {qrPayment && (
+          <div className='flex flex-col items-center gap-3 text-center'>
+            <div className='rounded-md border bg-white p-3'>
+              <QRCodeSVG value={qrPayment.qrCode} size={220} />
+            </div>
+            {qrPayment.amount ? (
+              <div className='text-sm'>
+                {t('金额')}：{qrPayment.amount}
+              </div>
+            ) : null}
+            {qrPayment.tradeNo ? (
+              <div className='max-w-full break-all text-xs text-gray-500'>
+                {t('订单号')}：{qrPayment.tradeNo}
+              </div>
+            ) : null}
+          </div>
         )}
       </Modal>
 

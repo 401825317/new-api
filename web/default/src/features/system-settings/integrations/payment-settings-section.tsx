@@ -142,6 +142,22 @@ const paymentSchema = z.object({
       })
     }
   }),
+  WxPayEnabled: z.boolean(),
+  WxPayAppID: z.string(),
+  WxPayMchID: z.string(),
+  WxPayPrivateKey: z.string(),
+  WxPayAPIv3Key: z.string().refine((value) => {
+    const trimmed = value.trim()
+    return !trimmed || trimmed.length === 32
+  }, 'APIv3 key must be 32 characters'),
+  WxPayCertSerial: z.string(),
+  WxPayPublicKey: z.string(),
+  WxPayPublicKeyID: z.string(),
+  WxPayNotifyURL: z.string().refine((value) => {
+    const trimmed = value.trim()
+    if (!trimmed) return true
+    return /^https?:\/\//.test(trimmed)
+  }, 'Provide a valid URL starting with http:// or https://'),
   WaffoEnabled: z.boolean(),
   WaffoApiKey: z.string(),
   WaffoPrivateKey: z.string(),
@@ -419,6 +435,15 @@ export function PaymentSettingsSection({
       CreemWebhookSecret: values.CreemWebhookSecret.trim(),
       CreemTestMode: values.CreemTestMode,
       CreemProducts: values.CreemProducts.trim(),
+      WxPayEnabled: values.WxPayEnabled,
+      WxPayAppID: values.WxPayAppID.trim(),
+      WxPayMchID: values.WxPayMchID.trim(),
+      WxPayPrivateKey: values.WxPayPrivateKey.trim(),
+      WxPayAPIv3Key: values.WxPayAPIv3Key.trim(),
+      WxPayCertSerial: values.WxPayCertSerial.trim(),
+      WxPayPublicKey: values.WxPayPublicKey.trim(),
+      WxPayPublicKeyID: values.WxPayPublicKeyID.trim(),
+      WxPayNotifyURL: removeTrailingSlash(values.WxPayNotifyURL.trim()),
       WaffoEnabled: values.WaffoEnabled,
       WaffoSandbox: values.WaffoSandbox,
       WaffoMerchantId: values.WaffoMerchantId.trim(),
@@ -464,6 +489,17 @@ export function PaymentSettingsSection({
       CreemWebhookSecret: initialRef.current.CreemWebhookSecret.trim(),
       CreemTestMode: initialRef.current.CreemTestMode,
       CreemProducts: initialRef.current.CreemProducts.trim(),
+      WxPayEnabled: initialRef.current.WxPayEnabled,
+      WxPayAppID: initialRef.current.WxPayAppID.trim(),
+      WxPayMchID: initialRef.current.WxPayMchID.trim(),
+      WxPayPrivateKey: initialRef.current.WxPayPrivateKey.trim(),
+      WxPayAPIv3Key: initialRef.current.WxPayAPIv3Key.trim(),
+      WxPayCertSerial: initialRef.current.WxPayCertSerial.trim(),
+      WxPayPublicKey: initialRef.current.WxPayPublicKey.trim(),
+      WxPayPublicKeyID: initialRef.current.WxPayPublicKeyID.trim(),
+      WxPayNotifyURL: removeTrailingSlash(
+        initialRef.current.WxPayNotifyURL.trim()
+      ),
       WaffoEnabled: initialRef.current.WaffoEnabled,
       WaffoSandbox: initialRef.current.WaffoSandbox,
       WaffoMerchantId: initialRef.current.WaffoMerchantId.trim(),
@@ -609,6 +645,48 @@ export function PaymentSettingsSection({
       normalizeJsonForComparison(initial.CreemProducts)
     ) {
       updates.push({ key: 'CreemProducts', value: sanitized.CreemProducts })
+    }
+
+    if (sanitized.WxPayEnabled !== initial.WxPayEnabled) {
+      updates.push({ key: 'WxPayEnabled', value: sanitized.WxPayEnabled })
+    }
+
+    if (sanitized.WxPayAppID !== initial.WxPayAppID) {
+      updates.push({ key: 'WxPayAppID', value: sanitized.WxPayAppID })
+    }
+
+    if (sanitized.WxPayMchID !== initial.WxPayMchID) {
+      updates.push({ key: 'WxPayMchID', value: sanitized.WxPayMchID })
+    }
+
+    if (sanitized.WxPayPrivateKey) {
+      updates.push({ key: 'WxPayPrivateKey', value: sanitized.WxPayPrivateKey })
+    }
+
+    if (sanitized.WxPayAPIv3Key) {
+      updates.push({ key: 'WxPayAPIv3Key', value: sanitized.WxPayAPIv3Key })
+    }
+
+    if (sanitized.WxPayCertSerial !== initial.WxPayCertSerial) {
+      updates.push({
+        key: 'WxPayCertSerial',
+        value: sanitized.WxPayCertSerial,
+      })
+    }
+
+    if (sanitized.WxPayPublicKey) {
+      updates.push({ key: 'WxPayPublicKey', value: sanitized.WxPayPublicKey })
+    }
+
+    if (sanitized.WxPayPublicKeyID !== initial.WxPayPublicKeyID) {
+      updates.push({
+        key: 'WxPayPublicKeyID',
+        value: sanitized.WxPayPublicKeyID,
+      })
+    }
+
+    if (sanitized.WxPayNotifyURL !== initial.WxPayNotifyURL) {
+      updates.push({ key: 'WxPayNotifyURL', value: sanitized.WxPayNotifyURL })
     }
 
     if (sanitized.WaffoEnabled !== initial.WaffoEnabled) {
@@ -1179,6 +1257,233 @@ export function PaymentSettingsSection({
                 )}
               />
             </div>
+          </div>
+
+          <Separator />
+
+          <div className='space-y-4'>
+            <div>
+              <h3 className='text-lg font-medium'>{t('WeChat Pay Gateway')}</h3>
+              <p className='text-muted-foreground text-sm'>
+                {t('Official WeChat Pay Native QR code integration')}
+              </p>
+            </div>
+
+            <div className='rounded-md bg-emerald-50 p-4 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100'>
+              <p className='mb-2 font-medium'>{t('Webhook Configuration:')}</p>
+              <ul className='list-inside list-disc space-y-1'>
+                <li>
+                  {t('Webhook URL:')}{' '}
+                  <code className='rounded bg-emerald-100 px-1 py-0.5 text-xs dark:bg-emerald-900'>
+                    {'<ServerAddress>/api/user/wxpay/notify'}
+                  </code>
+                </li>
+                <li>
+                  {t(
+                    'Use the WeChat Pay public-key mode configuration: AppID, MchID, merchant private key, merchant cert serial, APIv3 key, public key, and public key ID.'
+                  )}
+                </li>
+              </ul>
+            </div>
+
+            <FormField
+              control={form.control}
+              name='WxPayEnabled'
+              render={({ field }) => (
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <FormLabel>{t('Enable WeChat Pay')}</FormLabel>
+                    <FormDescription>
+                      {t('Show WeChat Pay as a direct QR-code payment method')}
+                    </FormDescription>
+                  </SettingsSwitchContent>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                </SettingsSwitchItem>
+              )}
+            />
+
+            <div className='grid gap-6 md:grid-cols-3'>
+              <FormField
+                control={form.control}
+                name='WxPayAppID'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('AppID')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder='wx...'
+                        autoComplete='off'
+                        {...field}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='WxPayMchID'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Merchant ID')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder={t('WeChat Pay MchID')}
+                        autoComplete='off'
+                        {...field}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='WxPayCertSerial'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Merchant cert serial')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder={t('Certificate serial number')}
+                        autoComplete='off'
+                        {...field}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className='grid gap-6 md:grid-cols-2'>
+              <FormField
+                control={form.control}
+                name='WxPayAPIv3Key'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('APIv3 key')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='password'
+                        placeholder={t('32-character key')}
+                        autoComplete='new-password'
+                        {...field}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t('Leave blank unless rotating the key')}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='WxPayPublicKeyID'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Public key ID')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder='PUB_KEY_ID_...'
+                        autoComplete='off'
+                        {...field}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className='grid gap-6 md:grid-cols-2'>
+              <FormField
+                control={form.control}
+                name='WxPayPrivateKey'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Merchant private key')}</FormLabel>
+                    <FormControl>
+                      <Textarea
+                        rows={6}
+                        placeholder={t(
+                          'Paste the merchant private key PEM or base64 body'
+                        )}
+                        autoComplete='new-password'
+                        {...field}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t('Leave blank unless rotating the private key')}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='WxPayPublicKey'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('WeChat Pay public key')}</FormLabel>
+                    <FormControl>
+                      <Textarea
+                        rows={6}
+                        placeholder={t(
+                          'Paste the WeChat Pay public key PEM or base64 body'
+                        )}
+                        autoComplete='new-password'
+                        {...field}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t('Leave blank unless rotating the public key')}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <FormField
+              control={form.control}
+              name='WxPayNotifyURL'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Notify URL override')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder='https://gateway.example.com/api/user/wxpay/notify'
+                      {...field}
+                      onChange={(event) => field.onChange(event.target.value)}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Optional. Leave blank to use the server callback address.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
           </div>
 
           <Separator />
