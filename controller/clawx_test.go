@@ -146,3 +146,31 @@ func TestClawXRegisterReturnsActivationErrorCode(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), `"code":"activation_invalid"`)
 	require.Contains(t, recorder.Body.String(), "激活码无效")
 }
+
+func TestClawXRegisterRejectsTakenUsernameWithoutConsumingActivationCode(t *testing.T) {
+	setupClawXControllerTest(t)
+	createClawXTestUser(t, "test2")
+	createClawXActivationCode(t, "ACTIVATE-TAKEN")
+
+	recorder := performClawXRequest(ClawXRegister, `{
+		"account":"test2",
+		"password":"password123",
+		"activationCode":"ACTIVATE-TAKEN",
+		"device":{"id":"device-new","name":"Mac"}
+	}`)
+
+	require.Equal(t, http.StatusConflict, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"code":"user_exists"`)
+
+	var count int64
+	require.NoError(t, model.DB.Model(&model.User{}).Where("username IN ?", []string{"test21", "test22"}).Count(&count).Error)
+	require.Equal(t, int64(0), count)
+
+	var redemption model.Redemption
+	require.NoError(t, model.DB.Where("`key` = ?", "ACTIVATE-TAKEN").First(&redemption).Error)
+	require.Equal(t, common.RedemptionCodeStatusEnabled, redemption.Status)
+
+	var ticketCount int64
+	require.NoError(t, model.DB.Model(&model.ClawXActivationTicket{}).Count(&ticketCount).Error)
+	require.Equal(t, int64(0), ticketCount)
+}

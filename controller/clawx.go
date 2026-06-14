@@ -622,6 +622,20 @@ func ClawXRegister(c *gin.Context) {
 		clawXApiError(c, http.StatusBadRequest, "device_required", "缺少设备 ID")
 		return
 	}
+	username := normalizeClawXUsernameBase(account)
+	if username == "" {
+		clawXApiError(c, http.StatusBadRequest, "invalid_username", "用户名格式错误")
+		return
+	}
+	exist, err := model.CheckUserExistOrDeleted(username, email)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if exist {
+		clawXApiError(c, http.StatusConflict, "user_exists", "用户名已存在")
+		return
+	}
 	var ticket *model.ClawXActivationTicket
 	var redemption *model.Redemption
 	if clawXBoolEnv("CLAWX_ACTIVATION_REQUIRED", true) {
@@ -632,16 +646,6 @@ func ClawXRegister(c *gin.Context) {
 			clawXApiError(c, http.StatusBadRequest, code, clawXActivationErrorMessage(code))
 			return
 		}
-	}
-	username := buildClawXUsername(account)
-	exist, err := model.CheckUserExistOrDeleted(username, email)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if exist {
-		clawXApiError(c, http.StatusConflict, "user_exists", "用户已存在")
-		return
 	}
 	var user model.User
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
