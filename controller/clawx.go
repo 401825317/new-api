@@ -243,6 +243,30 @@ func clawXApiErrorMsg(c *gin.Context, status int, msg string) {
 	})
 }
 
+func clawXApiError(c *gin.Context, status int, code string, msg string) {
+	c.JSON(status, gin.H{
+		"success":   false,
+		"code":      code,
+		"errorCode": code,
+		"message":   msg,
+	})
+}
+
+func clawXActivationErrorMessage(code string) string {
+	switch code {
+	case "activation_expired":
+		return "激活码已过期，请联系客服获取新的激活码"
+	case "activation_consumed":
+		return "激活码已使用，请联系客服获取新的激活码"
+	case "activation_ticket_expired":
+		return "激活校验已过期，请重新输入激活码"
+	case "activation_device_mismatch":
+		return "激活码校验设备不一致，请重新输入激活码"
+	default:
+		return "激活码无效，请联系客服获取新的激活码"
+	}
+}
+
 func normalizeClawXUsernameBase(account string) string {
 	base := strings.TrimSpace(account)
 	if at := strings.Index(base, "@"); at > 0 {
@@ -487,6 +511,26 @@ func resolveClawXActivationTicket(ticketOrCode string, fallbackCode string, devi
 	return ticket, redemption, nil
 }
 
+func consumeClawXActivationForUser(tx *gorm.DB, ticket *model.ClawXActivationTicket, redemption *model.Redemption, userId int) error {
+	if ticket == nil || redemption == nil {
+		return nil
+	}
+	keyCol := "`key`"
+	if common.UsingPostgreSQL {
+		keyCol = `"key"`
+	}
+	if err := tx.Model(&model.Redemption{}).
+		Where(keyCol+" = ? AND status = ?", redemption.Key, common.RedemptionCodeStatusEnabled).
+		Updates(map[string]interface{}{
+			"status":        common.RedemptionCodeStatusUsed,
+			"redeemed_time": common.GetTimestamp(),
+			"used_user_id":  userId,
+		}).Error; err != nil {
+		return err
+	}
+	return model.MarkClawXActivationTicketUsed(tx, ticket.Id, userId)
+}
+
 func ClawXActivationCheck(c *gin.Context) {
 	var req clawXActivationCheckRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -495,11 +539,20 @@ func ClawXActivationCheck(c *gin.Context) {
 	}
 	redemption, err := findClawXRedemptionByCode(req.Code, nil)
 	if err != nil {
-		common.ApiSuccess(c, gin.H{"valid": false, "errorCode": "activation_invalid"})
+		common.ApiSuccess(c, gin.H{
+			"valid":     false,
+			"errorCode": "activation_invalid",
+			"message":   clawXActivationErrorMessage("activation_invalid"),
+		})
 		return
 	}
 	if err := validateClawXRedemption(redemption); err != nil {
-		common.ApiSuccess(c, gin.H{"valid": false, "errorCode": err.Error()})
+		code := err.Error()
+		common.ApiSuccess(c, gin.H{
+			"valid":     false,
+			"errorCode": code,
+			"message":   clawXActivationErrorMessage(code),
+		})
 		return
 	}
 	rawTicket, err := clawXRandomSecret("cxt_")
@@ -527,30 +580,30 @@ func ClawXActivationCheck(c *gin.Context) {
 
 func ClawXRegister(c *gin.Context) {
 	if !common.RegisterEnabled || !common.PasswordRegisterEnabled {
-		clawXApiErrorMsg(c, http.StatusForbidden, "注册已关闭")
+		clawXApiError(c, http.StatusForbidden, "registration_disabled", "注册已关闭")
 		return
 	}
 	var req clawXAuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		clawXApiErrorMsg(c, http.StatusBadRequest, "参数错误")
+		clawXApiError(c, http.StatusBadRequest, "invalid_request", "参数错误")
 		return
 	}
 	account, email := normalizeClawXAccount(req)
 	if account == "" || req.Password == "" {
-		clawXApiErrorMsg(c, http.StatusBadRequest, "账号和密码不能为空")
+		clawXApiError(c, http.StatusBadRequest, "missing_credentials", "账号和密码不能为空")
 		return
 	}
 	if len(req.Password) < 8 || len(req.Password) > 20 {
-		clawXApiErrorMsg(c, http.StatusBadRequest, "密码长度需为 8-20 位")
+		clawXApiError(c, http.StatusBadRequest, "password_policy", "密码长度需为 8-20 位")
 		return
 	}
 	if email != "" {
 		if err := common.Validate.Var(email, "email"); err != nil {
-			clawXApiErrorMsg(c, http.StatusBadRequest, "邮箱格式错误")
+			clawXApiError(c, http.StatusBadRequest, "invalid_email", "邮箱格式错误")
 			return
 		}
 		if model.IsEmailAlreadyTaken(email) {
-			clawXApiErrorMsg(c, http.StatusConflict, "邮箱已被占用")
+			clawXApiError(c, http.StatusConflict, "email_taken", "邮箱已被占用")
 			return
 		}
 	}
@@ -560,13 +613,13 @@ func ClawXRegister(c *gin.Context) {
 			code = strings.TrimSpace(req.VerificationCode)
 		}
 		if email == "" || code == "" || !common.VerifyCodeWithKey(email, code, common.EmailVerificationPurpose) {
-			clawXApiErrorMsg(c, http.StatusBadRequest, "邮箱验证码错误")
+			clawXApiError(c, http.StatusBadRequest, "verification_invalid", "邮箱验证码错误")
 			return
 		}
 	}
 	device := normalizeClawXDevice(req.Device)
 	if device.DeviceId == "" {
-		clawXApiErrorMsg(c, http.StatusBadRequest, "缺少设备 ID")
+		clawXApiError(c, http.StatusBadRequest, "device_required", "缺少设备 ID")
 		return
 	}
 	var ticket *model.ClawXActivationTicket
@@ -575,7 +628,8 @@ func ClawXRegister(c *gin.Context) {
 		var err error
 		ticket, redemption, err = resolveClawXActivationTicket(req.ActivationTicket, req.ActivationCode, device.DeviceId)
 		if err != nil {
-			clawXApiErrorMsg(c, http.StatusBadRequest, err.Error())
+			code := err.Error()
+			clawXApiError(c, http.StatusBadRequest, code, clawXActivationErrorMessage(code))
 			return
 		}
 	}
@@ -586,7 +640,7 @@ func ClawXRegister(c *gin.Context) {
 		return
 	}
 	if exist {
-		clawXApiErrorMsg(c, http.StatusConflict, "用户已存在")
+		clawXApiError(c, http.StatusConflict, "user_exists", "用户已存在")
 		return
 	}
 	var user model.User
@@ -618,20 +672,7 @@ func ClawXRegister(c *gin.Context) {
 			return err
 		}
 		if ticket != nil && redemption != nil {
-			keyCol := "`key`"
-			if common.UsingPostgreSQL {
-				keyCol = `"key"`
-			}
-			if err := tx.Model(&model.Redemption{}).
-				Where(keyCol+" = ? AND status = ?", redemption.Key, common.RedemptionCodeStatusEnabled).
-				Updates(map[string]interface{}{
-					"status":        common.RedemptionCodeStatusUsed,
-					"redeemed_time": common.GetTimestamp(),
-					"used_user_id":  cleanUser.Id,
-				}).Error; err != nil {
-				return err
-			}
-			if err := model.MarkClawXActivationTicketUsed(tx, ticket.Id, cleanUser.Id); err != nil {
+			if err := consumeClawXActivationForUser(tx, ticket, redemption, cleanUser.Id); err != nil {
 				return err
 			}
 		}
@@ -654,28 +695,92 @@ func ClawXRegister(c *gin.Context) {
 
 func ClawXLogin(c *gin.Context) {
 	if !common.PasswordLoginEnabled {
-		clawXApiErrorMsg(c, http.StatusForbidden, "登录已关闭")
+		clawXApiError(c, http.StatusForbidden, "login_disabled", "登录已关闭")
 		return
 	}
 	var req clawXAuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		clawXApiErrorMsg(c, http.StatusBadRequest, "参数错误")
+		clawXApiError(c, http.StatusBadRequest, "invalid_request", "参数错误")
 		return
 	}
 	account, email := normalizeClawXAccount(req)
 	if account == "" || req.Password == "" {
-		clawXApiErrorMsg(c, http.StatusBadRequest, "账号和密码不能为空")
+		clawXApiError(c, http.StatusBadRequest, "missing_credentials", "账号和密码不能为空")
 		return
 	}
 	user, err := findClawXLoginUser(account, email, req.Password)
 	if err != nil {
-		clawXApiErrorMsg(c, http.StatusUnauthorized, "账号或密码错误")
+		clawXApiError(c, http.StatusUnauthorized, "invalid_credentials", "账号或密码错误")
 		return
 	}
-	device, err := model.UpsertClawXDevice(user.Id, normalizeClawXDevice(req.Device))
-	if err != nil {
+	devicePayload := normalizeClawXDevice(req.Device)
+	if devicePayload.DeviceId == "" {
+		clawXApiError(c, http.StatusBadRequest, "device_required", "缺少设备 ID")
+		return
+	}
+	device, err := model.GetClawXDevice(user.Id, devicePayload.DeviceId)
+	deviceExists := err == nil
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		common.ApiError(c, err)
 		return
+	}
+	deviceAuthorized := deviceExists && device.Status == model.ClawXDeviceStatusActive
+	if !deviceAuthorized && clawXBoolEnv("CLAWX_ACTIVATION_REQUIRED", true) {
+		if strings.TrimSpace(req.ActivationTicket) == "" && strings.TrimSpace(req.ActivationCode) == "" {
+			clawXApiError(c, http.StatusForbidden, "device_authorization_required", "当前设备需要激活码授权后才能使用")
+			return
+		}
+		ticket, redemption, activationErr := resolveClawXActivationTicket(req.ActivationTicket, req.ActivationCode, devicePayload.DeviceId)
+		if activationErr != nil {
+			code := activationErr.Error()
+			clawXApiError(c, http.StatusBadRequest, code, clawXActivationErrorMessage(code))
+			return
+		}
+		err = model.DB.Transaction(func(tx *gorm.DB) error {
+			devicePayload.UserId = user.Id
+			devicePayload.Status = model.ClawXDeviceStatusActive
+			now := common.GetTimestamp()
+			devicePayload.CreatedAt = now
+			devicePayload.UpdatedAt = now
+			devicePayload.LastSeenAt = now
+			if deviceExists {
+				if err := tx.Model(&model.ClawXDevice{}).
+					Where("user_id = ? AND device_id = ?", user.Id, devicePayload.DeviceId).
+					Updates(map[string]interface{}{
+						"name":         devicePayload.Name,
+						"platform":     devicePayload.Platform,
+						"arch":         devicePayload.Arch,
+						"app_version":  devicePayload.AppVersion,
+						"status":       model.ClawXDeviceStatusActive,
+						"updated_at":   now,
+						"last_seen_at": now,
+					}).Error; err != nil {
+					return err
+				}
+			} else {
+				if err := tx.Create(&devicePayload).Error; err != nil {
+					return err
+				}
+			}
+			return consumeClawXActivationForUser(tx, ticket, redemption, user.Id)
+		})
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		device = &devicePayload
+	} else if deviceAuthorized {
+		device, err = model.UpsertClawXDevice(user.Id, devicePayload)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	} else {
+		device, err = model.UpsertClawXDevice(user.Id, devicePayload)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	}
 	model.UpdateUserLastLoginAt(user.Id)
 	response, err := createClawXAuthResponse(user, *device)
@@ -745,7 +850,7 @@ func ClawXLogout(c *gin.Context) {
 func ClawXSendVerificationCode(c *gin.Context) {
 	var req map[string]interface{}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		common.ApiErrorMsg(c, "参数错误")
+		clawXApiError(c, http.StatusBadRequest, "invalid_request", "参数错误")
 		return
 	}
 	email := strings.TrimSpace(fmt.Sprintf("%v", req["email"]))
@@ -753,11 +858,11 @@ func ClawXSendVerificationCode(c *gin.Context) {
 		email = strings.TrimSpace(fmt.Sprintf("%v", req["account"]))
 	}
 	if err := common.Validate.Var(email, "required,email"); err != nil {
-		common.ApiErrorMsg(c, "无效的邮箱地址")
+		clawXApiError(c, http.StatusBadRequest, "invalid_email", "无效的邮箱地址")
 		return
 	}
 	if model.IsEmailAlreadyTaken(email) {
-		common.ApiErrorMsg(c, "邮箱地址已被占用")
+		clawXApiError(c, http.StatusConflict, "email_taken", "邮箱地址已被占用")
 		return
 	}
 	code := common.GenerateVerificationCode(6)
