@@ -34,6 +34,8 @@ const (
 	wxPayCurrency               = "CNY"
 	wxPayEventTransactionOK     = "TRANSACTION.SUCCESS"
 	wxPayTradeStateSuccess      = "SUCCESS"
+	wxPayTradeStateClosed       = "CLOSED"
+	wxPayTradeStateRevoked      = "REVOKED"
 	wxPayPaymentMethod          = "wxpay"
 	wxPayNotifySuccessCode      = "SUCCESS"
 	wxPayNotifySuccessMessage   = "成功"
@@ -86,6 +88,15 @@ type wxPayOrderQueryRequest struct {
 
 var queryWxPayNativeOrder = queryWxPayNativeOrderFromAPI
 var startWxPayOrderSyncOnce sync.Once
+
+func isWxPayCancelledTradeState(tradeState string) bool {
+	switch strings.TrimSpace(strings.ToUpper(tradeState)) {
+	case wxPayTradeStateClosed, wxPayTradeStateRevoked:
+		return true
+	default:
+		return false
+	}
+}
 
 func isWxPayMethod(paymentMethod string) bool {
 	return strings.TrimSpace(paymentMethod) == wxPayPaymentMethod
@@ -649,6 +660,12 @@ func settleWxPayTopUpFromQuery(ctx context.Context, topUp *model.TopUp, callerIp
 		return queried, topUp.Status, fmt.Errorf("微信支付返回订单号不匹配")
 	}
 	if queried.TradeState != wxPayTradeStateSuccess {
+		if isWxPayCancelledTradeState(queried.TradeState) {
+			if err := model.UpdatePendingTopUpStatus(topUp.TradeNo, model.PaymentProviderWxPay, common.TopUpStatusCancelled); err != nil {
+				return queried, topUp.Status, err
+			}
+			return queried, common.TopUpStatusCancelled, nil
+		}
 		return queried, topUp.Status, nil
 	}
 	if !amountCoversExpected(queried.PaidAmount, topUp.Money) {
@@ -685,6 +702,12 @@ func settleWxPaySubscriptionFromQuery(ctx context.Context, order *model.Subscrip
 		return queried, order.Status, fmt.Errorf("微信支付返回订单号不匹配")
 	}
 	if queried.TradeState != wxPayTradeStateSuccess {
+		if isWxPayCancelledTradeState(queried.TradeState) {
+			if err := model.UpdatePendingSubscriptionOrderStatus(order.TradeNo, model.PaymentProviderWxPay, common.TopUpStatusCancelled); err != nil {
+				return queried, order.Status, err
+			}
+			return queried, common.TopUpStatusCancelled, nil
+		}
 		return queried, order.Status, nil
 	}
 	if !amountCoversExpected(queried.PaidAmount, order.Money) {

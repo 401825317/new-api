@@ -984,6 +984,40 @@ func ClawXBillingCheckoutInfo(c *gin.Context) {
 	common.ApiSuccess(c, clawXTopupOverviewPayload(user))
 }
 
+func ClawXBillingOrderHistory(c *gin.Context) {
+	pageInfo := common.GetPageQuery(c)
+	topUps, total, err := model.GetUserTopUps(c.GetInt("id"), pageInfo)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	items := make([]gin.H, 0, len(topUps))
+	for _, topUp := range topUps {
+		if topUp == nil {
+			continue
+		}
+		items = append(items, gin.H{
+			"id":               topUp.Id,
+			"trade_no":         topUp.TradeNo,
+			"out_trade_no":     topUp.TradeNo,
+			"order_type":       "balance",
+			"amount":           topUp.Amount,
+			"credit_quota":     topUp.Amount,
+			"money":            strconv.FormatFloat(topUp.Money, 'f', 2, 64),
+			"payment_method":   topUp.PaymentMethod,
+			"payment_provider": topUp.PaymentProvider,
+			"status":           topUp.Status,
+			"create_time":      topUp.CreateTime,
+			"complete_time":    topUp.CompleteTime,
+		})
+	}
+
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(items)
+	common.ApiSuccess(c, pageInfo)
+}
+
 func paymentURL(uri string, params map[string]string) string {
 	if uri == "" {
 		return ""
@@ -1206,6 +1240,21 @@ func createClawXSubscriptionOrder(c *gin.Context, req clawXBillingOrderRequest, 
 	})
 }
 
+func clawXPaymentStatus(status string) string {
+	switch status {
+	case common.TopUpStatusSuccess:
+		return "success"
+	case common.TopUpStatusPending:
+		return "pending"
+	case common.TopUpStatusCancelled:
+		return "cancelled"
+	case common.TopUpStatusExpired:
+		return "expired"
+	default:
+		return "failed"
+	}
+}
+
 func ClawXBillingVerifyOrder(c *gin.Context) {
 	var req clawXBillingOrderVerifyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1221,15 +1270,9 @@ func ClawXBillingVerifyOrder(c *gin.Context) {
 		return
 	}
 	if topUp := model.GetTopUpByTradeNo(tradeNo); topUp != nil && topUp.UserId == c.GetInt("id") {
-		status := "pending"
-		if topUp.Status == common.TopUpStatusSuccess {
-			status = "success"
-		} else if topUp.Status != common.TopUpStatusPending {
-			status = "failed"
-		}
 		common.ApiSuccess(c, gin.H{
 			"trade_no":     tradeNo,
-			"status":       status,
+			"status":       clawXPaymentStatus(topUp.Status),
 			"order_type":   "balance",
 			"amount":       topUp.Amount,
 			"money":        strconv.FormatFloat(topUp.Money, 'f', 2, 64),
@@ -1238,15 +1281,9 @@ func ClawXBillingVerifyOrder(c *gin.Context) {
 		return
 	}
 	if order := model.GetSubscriptionOrderByTradeNo(tradeNo); order != nil && order.UserId == c.GetInt("id") {
-		status := "pending"
-		if order.Status == common.TopUpStatusSuccess {
-			status = "success"
-		} else if order.Status != common.TopUpStatusPending {
-			status = "failed"
-		}
 		common.ApiSuccess(c, gin.H{
 			"trade_no":   tradeNo,
-			"status":     status,
+			"status":     clawXPaymentStatus(order.Status),
 			"order_type": "subscription",
 			"plan_id":    order.PlanId,
 			"money":      strconv.FormatFloat(order.Money, 'f', 2, 64),

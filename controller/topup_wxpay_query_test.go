@@ -154,6 +154,48 @@ func TestQueryWxPayOrderCompletesPendingTopUp(t *testing.T) {
 	assert.Equal(t, 1000000, user.Quota)
 }
 
+func TestQueryWxPayOrderCancelsClosedPendingTopUp(t *testing.T) {
+	setupWxPayQueryControllerTestDB(t)
+	insertWxPayQueryUser(t, 1)
+
+	const tradeNo = "WXUSR1NOCLOSED123"
+	require.NoError(t, (&model.TopUp{
+		UserId:          1,
+		Amount:          2,
+		Money:           0.02,
+		TradeNo:         tradeNo,
+		PaymentMethod:   wxPayPaymentMethod,
+		PaymentProvider: model.PaymentProviderWxPay,
+		CreateTime:      time.Now().Unix(),
+		Status:          common.TopUpStatusPending,
+	}).Insert())
+
+	stubWxPayQuery(t, func(_ context.Context, gotTradeNo string) (*wxPayQueriedOrder, error) {
+		require.Equal(t, tradeNo, gotTradeNo)
+		return &wxPayQueriedOrder{
+			OutTradeNo:     tradeNo,
+			TradeState:     wxPayTradeStateClosed,
+			TradeStateDesc: "订单已关闭",
+			RawPayload:     `{"trade_state":"CLOSED"}`,
+		}, nil
+	})
+
+	response := performWxPayQueryRequest(t, 1, tradeNo)
+	require.True(t, response.Success, response.Message)
+	assert.Equal(t, "topup", response.Data["order_type"])
+	assert.Equal(t, common.TopUpStatusCancelled, response.Data["local_status"])
+	assert.Equal(t, false, response.Data["paid"])
+
+	topUp := model.GetTopUpByTradeNo(tradeNo)
+	require.NotNil(t, topUp)
+	assert.Equal(t, common.TopUpStatusCancelled, topUp.Status)
+	assert.Zero(t, topUp.CompleteTime)
+
+	var user model.User
+	require.NoError(t, model.DB.First(&user, 1).Error)
+	assert.Equal(t, 0, user.Quota)
+}
+
 func TestQueryWxPayOrderRejectsOtherUsersOrderWithoutRemoteQuery(t *testing.T) {
 	setupWxPayQueryControllerTestDB(t)
 	insertWxPayQueryUser(t, 1)
@@ -243,4 +285,65 @@ func TestQueryWxPayOrderCompletesPendingSubscription(t *testing.T) {
 	require.NoError(t, model.DB.Model(&model.UserSubscription{}).Where("user_id = ?", 1).Count(&count).Error)
 	assert.Equal(t, int64(1), count)
 	assert.NotNil(t, model.GetTopUpByTradeNo(tradeNo))
+}
+
+func TestQueryWxPayOrderCancelsRevokedPendingSubscription(t *testing.T) {
+	setupWxPayQueryControllerTestDB(t)
+	insertWxPayQueryUser(t, 1)
+
+	plan := &model.SubscriptionPlan{
+		Id:                    12,
+		Title:                 "WxPay Revoked Plan",
+		PriceAmount:           9.99,
+		Currency:              "CNY",
+		DurationUnit:          model.SubscriptionDurationMonth,
+		DurationValue:         1,
+		QuotaResetPeriod:      model.SubscriptionResetNever,
+		Enabled:               true,
+		TotalAmount:           12345,
+		MaxPurchasePerUser:    0,
+		AllowBalancePay:       common.GetPointer(true),
+		StripePriceId:         "",
+		CreemProductId:        "",
+		WaffoPancakeProductId: "",
+	}
+	require.NoError(t, model.DB.Create(plan).Error)
+
+	const tradeNo = "WXSUBUSR1NOREVOKED123"
+	require.NoError(t, (&model.SubscriptionOrder{
+		UserId:          1,
+		PlanId:          plan.Id,
+		Money:           plan.PriceAmount,
+		TradeNo:         tradeNo,
+		PaymentMethod:   wxPayPaymentMethod,
+		PaymentProvider: model.PaymentProviderWxPay,
+		CreateTime:      time.Now().Unix(),
+		Status:          common.TopUpStatusPending,
+	}).Insert())
+
+	stubWxPayQuery(t, func(_ context.Context, gotTradeNo string) (*wxPayQueriedOrder, error) {
+		require.Equal(t, tradeNo, gotTradeNo)
+		return &wxPayQueriedOrder{
+			OutTradeNo:     tradeNo,
+			TradeState:     wxPayTradeStateRevoked,
+			TradeStateDesc: "订单已撤销",
+			RawPayload:     `{"trade_state":"REVOKED"}`,
+		}, nil
+	})
+
+	response := performWxPayQueryRequest(t, 1, tradeNo)
+	require.True(t, response.Success, response.Message)
+	assert.Equal(t, "subscription", response.Data["order_type"])
+	assert.Equal(t, common.TopUpStatusCancelled, response.Data["local_status"])
+	assert.Equal(t, false, response.Data["paid"])
+
+	order := model.GetSubscriptionOrderByTradeNo(tradeNo)
+	require.NotNil(t, order)
+	assert.Equal(t, common.TopUpStatusCancelled, order.Status)
+	assert.Zero(t, order.CompleteTime)
+
+	var count int64
+	require.NoError(t, model.DB.Model(&model.UserSubscription{}).Where("user_id = ?", 1).Count(&count).Error)
+	assert.Equal(t, int64(0), count)
+	assert.Nil(t, model.GetTopUpByTradeNo(tradeNo))
 }

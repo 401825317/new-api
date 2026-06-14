@@ -109,8 +109,7 @@ func UpdatePendingTopUpStatus(tradeNo string, expectedPaymentProvider string, ta
 			return ErrTopUpStatusInvalid
 		}
 
-		topUp.Status = targetStatus
-		return tx.Save(topUp).Error
+		return tx.Model(topUp).Update("status", targetStatus).Error
 	})
 }
 

@@ -653,6 +653,29 @@ func ExpireSubscriptionOrder(tradeNo string, expectedPaymentProvider string) err
 	})
 }
 
+func UpdatePendingSubscriptionOrderStatus(tradeNo string, expectedPaymentProvider string, targetStatus string) error {
+	if tradeNo == "" {
+		return errors.New("tradeNo is empty")
+	}
+	refCol := "`trade_no`"
+	if common.UsingPostgreSQL {
+		refCol = `"trade_no"`
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var order SubscriptionOrder
+		if err := tx.Set("gorm:query_option", "FOR UPDATE").Where(refCol+" = ?", tradeNo).First(&order).Error; err != nil {
+			return ErrSubscriptionOrderNotFound
+		}
+		if expectedPaymentProvider != "" && order.PaymentProvider != expectedPaymentProvider {
+			return ErrPaymentMethodMismatch
+		}
+		if order.Status != common.TopUpStatusPending {
+			return nil
+		}
+		return tx.Model(&order).Update("status", targetStatus).Error
+	})
+}
+
 // Admin bind (no payment). Creates a UserSubscription from a plan.
 func AdminBindSubscription(userId int, planId int, sourceNote string) (string, error) {
 	if userId <= 0 || planId <= 0 {

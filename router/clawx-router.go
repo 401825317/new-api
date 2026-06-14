@@ -41,6 +41,7 @@ func SetClawXRouter(apiRouter *gin.RouterGroup, anonymousRequestBodyLimit gin.Ha
 			billingRoute := authRoute.Group("/billing")
 			{
 				billingRoute.GET("/checkout-info", controller.ClawXBillingCheckoutInfo)
+				billingRoute.GET("/orders/history", controller.ClawXBillingOrderHistory)
 				billingRoute.POST("/orders", middleware.CriticalRateLimit(), controller.ClawXBillingCreateOrder)
 				billingRoute.POST("/orders/verify", controller.ClawXBillingVerifyOrder)
 			}
