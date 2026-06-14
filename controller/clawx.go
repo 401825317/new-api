@@ -27,6 +27,9 @@ const (
 	defaultClawXProviderKey  = "lingzhiwuxian"
 	defaultClawXProviderName = "灵智无限"
 	defaultClawXModel        = "qwen-latest"
+
+	defaultClawXAuthAccessTTLSeconds  = 24 * 60 * 60
+	defaultClawXAuthRefreshTTLSeconds = 10 * 365 * 24 * 60 * 60
 )
 
 type clawXDevicePayload struct {
@@ -356,8 +359,8 @@ func findClawXLoginUser(account string, email string, password string) (*model.U
 }
 
 func clawXSessionTTLs() (int64, int64) {
-	return int64(common.GetEnvOrDefault("CLAWX_AUTH_ACCESS_TTL_SECONDS", 24*60*60)),
-		int64(common.GetEnvOrDefault("CLAWX_AUTH_REFRESH_TTL_SECONDS", 30*24*60*60))
+	return int64(common.GetEnvOrDefault("CLAWX_AUTH_ACCESS_TTL_SECONDS", defaultClawXAuthAccessTTLSeconds)),
+		int64(common.GetEnvOrDefault("CLAWX_AUTH_REFRESH_TTL_SECONDS", defaultClawXAuthRefreshTTLSeconds))
 }
 
 func createClawXAuthResponse(user *model.User, device model.ClawXDevice) (gin.H, error) {
