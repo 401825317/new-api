@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/clawx_client_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -195,11 +196,42 @@ func clawXBootstrapPayload() gin.H {
 			"remoteMarketplaceEnabled": clawXBoolEnv("CLAWX_SKILL_MARKETPLACE_ENABLED", false),
 			"remoteMarketplaceBaseUrl": nil,
 		},
+		"client": clawXClientConfigPayload(),
 	}
 }
 
 func ClawXBootstrap(c *gin.Context) {
 	common.ApiSuccess(c, clawXBootstrapPayload())
+}
+
+func clawXClientConfigPayload() gin.H {
+	support := clawx_client_setting.GetSupport()
+	supportContacts := support.Contacts
+	supportEnabled := clawx_client_setting.GetClientSetting().SupportEnabled && len(supportContacts) > 0
+	firstSupportContact := clawx_client_setting.SupportContact{}
+	if len(supportContacts) > 0 {
+		firstSupportContact = supportContacts[0]
+	}
+	return gin.H{
+		"announcements": gin.H{
+			"enabled": clawx_client_setting.GetClientSetting().AnnouncementsEnabled,
+			"items":   clawx_client_setting.GetAnnouncements(),
+		},
+		"support": gin.H{
+			"enabled":     supportEnabled,
+			"title":       support.Title,
+			"description": support.Description,
+			"contacts":    supportContacts,
+			"qrCodeUrl":   firstSupportContact.QrCodeUrl,
+			"workHours":   firstSupportContact.WorkHours,
+			"wechatId":    firstSupportContact.WechatId,
+			"extraNote":   firstSupportContact.ExtraNote,
+		},
+	}
+}
+
+func ClawXClientConfig(c *gin.Context) {
+	common.ApiSuccess(c, clawXClientConfigPayload())
 }
 
 func clawXRandomSecret(prefix string) (string, error) {

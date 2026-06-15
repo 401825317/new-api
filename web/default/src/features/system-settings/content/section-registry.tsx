@@ -21,6 +21,7 @@ import { createSectionRegistry } from '../utils/section-registry'
 import { AnnouncementsSection } from './announcements-section'
 import { ApiInfoSection } from './api-info-section'
 import { ChatSettingsSection } from './chat-settings-section'
+import { ClawXClientSection } from './clawx-client-section'
 import { DashboardSection } from './dashboard-section'
 import { DrawingSettingsSection } from './drawing-settings-section'
 import { FAQSection } from './faq-section'
@@ -60,6 +61,26 @@ const CONTENT_SECTIONS = [
       <AnnouncementsSection
         enabled={settings['console_setting.announcements_enabled']}
         data={settings['console_setting.announcements']}
+      />
+    ),
+  },
+  {
+    id: 'clawx-client',
+    titleKey: 'ClawX Client',
+    build: (settings: ContentSettings) => (
+      <ClawXClientSection
+        key={[
+          settings['clawx_client_setting.announcements_enabled'],
+          settings['clawx_client_setting.announcements'],
+          settings['clawx_client_setting.support_enabled'],
+          settings['clawx_client_setting.support'],
+        ].join(':')}
+        announcementsEnabled={
+          settings['clawx_client_setting.announcements_enabled']
+        }
+        announcementsData={settings['clawx_client_setting.announcements']}
+        supportEnabled={settings['clawx_client_setting.support_enabled']}
+        supportData={settings['clawx_client_setting.support']}
       />
     ),
   },

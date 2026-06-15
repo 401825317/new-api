@@ -10,6 +10,7 @@ func SetClawXRouter(apiRouter *gin.RouterGroup, anonymousRequestBodyLimit gin.Ha
 	clawXRoute := apiRouter.Group("/clawx")
 	{
 		clawXRoute.GET("/bootstrap", controller.ClawXBootstrap)
+		clawXRoute.GET("/client-config", controller.ClawXClientConfig)
 		clawXRoute.POST("/activation/check", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ClawXActivationCheck)
 		clawXRoute.POST("/verification/send-code", middleware.EmailVerificationRateLimit(), anonymousRequestBodyLimit, controller.ClawXSendVerificationCode)
 		clawXRoute.POST("/register", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ClawXRegister)

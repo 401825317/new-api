@@ -124,6 +124,10 @@ export type ContentSettings = {
   'console_setting.announcements_enabled': boolean
   'console_setting.faq_enabled': boolean
   'console_setting.uptime_kuma_enabled': boolean
+  'clawx_client_setting.announcements': string
+  'clawx_client_setting.announcements_enabled': boolean
+  'clawx_client_setting.support': string
+  'clawx_client_setting.support_enabled': boolean
   DataExportEnabled: boolean
   DataExportDefaultTime: string
   DataExportInterval: number
