@@ -134,6 +134,12 @@ func main() {
 	// Channel upstream model update check task
 	controller.StartChannelUpstreamModelUpdateTask()
 
+	// Optional missing-only model metadata sync task.
+	controller.StartModelMetadataSyncTask()
+
+	// Optional missing-only model pricing sync task.
+	controller.StartModelPricingSyncTask()
+
 	if common.IsMasterNode && constant.UpdateTask {
 		gopool.Go(func() {
 			controller.UpdateMidjourneyTaskBulk()
