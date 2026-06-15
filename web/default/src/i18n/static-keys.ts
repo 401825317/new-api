@@ -204,6 +204,17 @@ export const STATIC_I18N_KEYS = [
   // Channel Affinity section
   'Channel Affinity',
 
+  // ClawX client content settings
+  'ClawX Client',
+  'ClawX Important Announcements',
+  'ClawX Support Contact',
+  'Help & Support',
+  'Official Support',
+  'Support contact updated. Click "Save Settings" to apply.',
+  'Support contact added. Click "Save Settings" to apply.',
+  'Support contact deleted. Click "Save Settings" to apply.',
+  '{{count}} support contacts will be removed from the list.',
+
   // Models constants
   'Exact Match',
   'Prefix Match',
