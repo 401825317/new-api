@@ -110,9 +110,12 @@ func VideoProxy(c *gin.Context) {
 		case constant.ChannelTypeOpenAI, constant.ChannelTypeSora:
 			if resultURL := strings.TrimSpace(task.GetResultURL()); resultURL != "" && !isTaskProxyContentURL(resultURL, task.TaskID) {
 				videoURL = resultURL
+				if shouldAuthorizeUpstreamVideoURL(videoURL) {
+					setVideoProxyBearer(req, getVideoProxyChannelKey(channel, task))
+				}
 			} else {
 				videoURL = fmt.Sprintf("%s/v1/videos/%s/content", baseURL, task.GetUpstreamTaskID())
-				req.Header.Set("Authorization", "Bearer "+channel.Key)
+				setVideoProxyBearer(req, getVideoProxyChannelKey(channel, task))
 			}
 		default:
 			// Video URL is stored in PrivateData.ResultURL (fallback to FailReason for old data)
@@ -181,6 +184,46 @@ func VideoProxy(c *gin.Context) {
 	c.Writer.WriteHeader(resp.StatusCode)
 	if _, err = io.Copy(c.Writer, resp.Body); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to stream video content: %s", err.Error()))
+	}
+}
+
+func shouldAuthorizeUpstreamVideoURL(videoURL string) bool {
+	videoURL = strings.TrimSpace(videoURL)
+	if videoURL == "" {
+		return false
+	}
+	parsedVideoURL, err := url.Parse(videoURL)
+	if err != nil || parsedVideoURL.Host == "" || parsedVideoURL.Scheme == "" {
+		return false
+	}
+	if parsedVideoURL.Scheme != "http" && parsedVideoURL.Scheme != "https" {
+		return false
+	}
+	path := strings.TrimSpace(parsedVideoURL.EscapedPath())
+	return strings.HasPrefix(path, "/v1/videos/") && strings.HasSuffix(path, "/content")
+}
+
+func getVideoProxyChannelKey(channel *model.Channel, task *model.Task) string {
+	if task != nil {
+		if key := strings.TrimSpace(task.PrivateData.Key); key != "" {
+			return key
+		}
+	}
+	if channel == nil {
+		return ""
+	}
+	for _, key := range channel.GetKeys() {
+		if key = strings.TrimSpace(key); key != "" {
+			return key
+		}
+	}
+	return strings.TrimSpace(channel.Key)
+}
+
+func setVideoProxyBearer(req *http.Request, key string) {
+	key = strings.TrimSpace(key)
+	if req != nil && key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
 	}
 }
 
