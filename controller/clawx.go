@@ -27,7 +27,7 @@ const (
 	defaultClawXOrigin       = "https://zz-cn.lingzhiwuxian.com"
 	defaultClawXProviderKey  = "lingzhiwuxian"
 	defaultClawXProviderName = "灵智无限"
-	defaultClawXModel        = "qwen-latest"
+	defaultClawXModel        = "smart-latest"
 
 	defaultClawXAuthAccessTTLSeconds  = 24 * 60 * 60
 	defaultClawXAuthRefreshTTLSeconds = 10 * 365 * 24 * 60 * 60
@@ -128,6 +128,7 @@ func clawXModelFamilies() []gin.H {
 	raw := strings.TrimSpace(os.Getenv("CLAWX_MODEL_FAMILIES"))
 	if raw == "" {
 		return []gin.H{
+			{"id": "smart-latest", "name": "智能路由", "family": "smart"},
 			{"id": "qwen-latest", "name": "通义千问最新版", "family": "qwen"},
 			{"id": "deepseek-latest", "name": "DeepSeek 最新版", "family": "deepseek"},
 			{"id": "doubao-latest", "name": "豆包最新版", "family": "doubao"},
