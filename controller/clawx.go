@@ -27,7 +27,7 @@ const (
 	defaultClawXOrigin       = "https://zz-cn.lingzhiwuxian.com"
 	defaultClawXProviderKey  = "lingzhiwuxian"
 	defaultClawXProviderName = "灵智无限"
-	defaultClawXModel        = "qwen-latest"
+	defaultClawXModel        = "smart-latest"
 
 	defaultClawXAuthAccessTTLSeconds  = 24 * 60 * 60
 	defaultClawXAuthRefreshTTLSeconds = 10 * 365 * 24 * 60 * 60
