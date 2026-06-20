@@ -39,6 +39,17 @@ export type UpdateOptionResponse = {
   message: string
 }
 
+export type ClawXSupportQRCodeUploadResponse = {
+  success: boolean
+  message: string
+  data?: {
+    url: string
+    fileName: string
+    mimeType: string
+    size: number
+  }
+}
+
 export type ConfirmPaymentComplianceResponse = {
   success: boolean
   message: string

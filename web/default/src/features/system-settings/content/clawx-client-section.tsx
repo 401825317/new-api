@@ -16,11 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState, type ChangeEvent } from 'react'
 import * as z from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Edit, Plus, Save, Trash2 } from 'lucide-react'
+import { Edit, ImageUp, Loader2, Plus, Save, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import dayjs from '@/lib/dayjs'
@@ -59,6 +59,7 @@ import { StaticDataTable } from '@/components/data-table'
 import { DateTimePicker } from '@/components/datetime-picker'
 import { Dialog } from '@/components/dialog'
 import { StatusBadge } from '@/components/status-badge'
+import { uploadClawXSupportQRCode } from '../api'
 import { SettingsSwitchField } from '../components/settings-form-layout'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
@@ -134,6 +135,8 @@ type SupportContactFormValues = z.infer<typeof supportContactSchema>
 const ANNOUNCEMENT_FORM_ID = 'clawx-client-announcement-form'
 const SUPPORT_FORM_ID = 'clawx-client-support-form'
 const SUPPORT_CONTACT_FORM_ID = 'clawx-client-support-contact-form'
+const SUPPORT_QRCODE_MAX_SIZE = 2 * 1024 * 1024
+const SUPPORT_QRCODE_ACCEPT = 'image/png,image/jpeg,image/gif'
 
 const levelOptions = [
   { value: 'normal', label: 'Normal', badgeVariant: 'neutral' as const },
@@ -191,7 +194,9 @@ function parseSupport(data: string): SupportConfig {
   }
 }
 
-function parseSupportContacts(parsed: Record<string, unknown>): SupportContact[] {
+function parseSupportContacts(
+  parsed: Record<string, unknown>
+): SupportContact[] {
   const rawContacts = Array.isArray(parsed.contacts) ? parsed.contacts : []
   const contacts = rawContacts
     .map((item, index) => {
@@ -202,11 +207,15 @@ function parseSupportContacts(parsed: Record<string, unknown>): SupportContact[]
       return {
         id: String(contact.id || `support-${index + 1}`),
         label: String(contact.label || ''),
-        description: typeof contact.description === 'string' ? contact.description : '',
-        qrCodeUrl: typeof contact.qrCodeUrl === 'string' ? contact.qrCodeUrl : '',
-        workHours: typeof contact.workHours === 'string' ? contact.workHours : '',
+        description:
+          typeof contact.description === 'string' ? contact.description : '',
+        qrCodeUrl:
+          typeof contact.qrCodeUrl === 'string' ? contact.qrCodeUrl : '',
+        workHours:
+          typeof contact.workHours === 'string' ? contact.workHours : '',
         wechatId: typeof contact.wechatId === 'string' ? contact.wechatId : '',
-        extraNote: typeof contact.extraNote === 'string' ? contact.extraNote : '',
+        extraNote:
+          typeof contact.extraNote === 'string' ? contact.extraNote : '',
         enabled: contact.enabled !== false,
       }
     })
@@ -216,7 +225,8 @@ function parseSupportContacts(parsed: Record<string, unknown>): SupportContact[]
     return contacts
   }
 
-  const legacyQrCodeUrl = typeof parsed.qrCodeUrl === 'string' ? parsed.qrCodeUrl : ''
+  const legacyQrCodeUrl =
+    typeof parsed.qrCodeUrl === 'string' ? parsed.qrCodeUrl : ''
   if (!legacyQrCodeUrl) {
     return []
   }
@@ -224,8 +234,12 @@ function parseSupportContacts(parsed: Record<string, unknown>): SupportContact[]
   return [
     {
       id: 'support-default',
-      label: typeof parsed.title === 'string' && parsed.title ? parsed.title : 'Official Support',
-      description: typeof parsed.description === 'string' ? parsed.description : '',
+      label:
+        typeof parsed.title === 'string' && parsed.title
+          ? parsed.title
+          : 'Official Support',
+      description:
+        typeof parsed.description === 'string' ? parsed.description : '',
       qrCodeUrl: legacyQrCodeUrl,
       workHours: typeof parsed.workHours === 'string' ? parsed.workHours : '',
       wechatId: typeof parsed.wechatId === 'string' ? parsed.wechatId : '',
@@ -238,8 +252,9 @@ function parseSupportContacts(parsed: Record<string, unknown>): SupportContact[]
 export function ClawXClientSection(props: ClawXClientSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
-  const [announcements, setAnnouncements] = useState<ClientAnnouncement[]>(
-    () => parseAnnouncements(props.announcementsData)
+  const supportQRCodeInputRef = useRef<HTMLInputElement | null>(null)
+  const [announcements, setAnnouncements] = useState<ClientAnnouncement[]>(() =>
+    parseAnnouncements(props.announcementsData)
   )
   const [announcementsEnabled, setAnnouncementsEnabled] = useState(
     props.announcementsEnabled
@@ -267,6 +282,7 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
     useState<ClientAnnouncement | null>(null)
   const [editingSupportContact, setEditingSupportContact] =
     useState<SupportContact | null>(null)
+  const [supportQRCodeUploading, setSupportQRCodeUploading] = useState(false)
 
   const announcementForm = useForm<AnnouncementFormValues>({
     resolver: zodResolver(announcementSchema),
@@ -306,12 +322,12 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
     () =>
       [...announcements].sort(
         (a, b) =>
-          new Date(b.publishedAt).getTime() -
-          new Date(a.publishedAt).getTime()
+          new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime()
       ),
     [announcements]
   )
   const supportChanged = hasSupportChanges || supportForm.formState.isDirty
+  const watchedSupportQRCodeUrl = supportContactForm.watch('qrCodeUrl')
 
   const handleToggleAnnouncementsEnabled = async (checked: boolean) => {
     try {
@@ -433,12 +449,50 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
         ...prev,
         { id: makeSupportContactId(), ...values },
       ])
-      toast.success(
-        t('Support contact added. Click "Save Settings" to apply.')
-      )
+      toast.success(t('Support contact added. Click "Save Settings" to apply.'))
     }
     setHasSupportChanges(true)
     setShowSupportContactDialog(false)
+  }
+
+  const handleChooseSupportQRCode = () => {
+    supportQRCodeInputRef.current?.click()
+  }
+
+  const handleUploadSupportQRCode = async (
+    event: ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) {
+      return
+    }
+    if (!['image/png', 'image/jpeg', 'image/gif'].includes(file.type)) {
+      toast.error(t('Only PNG, JPG, or GIF images are supported.'))
+      return
+    }
+    if (file.size > SUPPORT_QRCODE_MAX_SIZE) {
+      toast.error(t('QR code image must be smaller than 2MB.'))
+      return
+    }
+    setSupportQRCodeUploading(true)
+    try {
+      const result = await uploadClawXSupportQRCode(file)
+      const url = result.data?.url
+      if (!result.success || !url) {
+        toast.error(result.message || t('Failed to upload QR code image'))
+        return
+      }
+      supportContactForm.setValue('qrCodeUrl', url, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+      toast.success(t('QR code image uploaded successfully'))
+    } catch {
+      toast.error(t('Failed to upload QR code image'))
+    } finally {
+      setSupportQRCodeUploading(false)
+    }
   }
 
   const handleDeleteSelected = () => {
@@ -456,7 +510,9 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
     setSelectedIds([])
     setHasAnnouncementChanges(true)
     setShowDeleteDialog(false)
-    toast.success(t('Client announcement deleted. Click "Save Settings" to apply.'))
+    toast.success(
+      t('Client announcement deleted. Click "Save Settings" to apply.')
+    )
   }
 
   const handleDeleteSelectedSupportContacts = () => {
@@ -622,9 +678,7 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
                 header: t('Publish Date'),
                 cell: (announcement) => (
                   <span className='text-sm'>
-                    {dayjs(announcement.publishedAt).format(
-                      'YYYY-MM-DD HH:mm'
-                    )}
+                    {dayjs(announcement.publishedAt).format('YYYY-MM-DD HH:mm')}
                   </span>
                 ),
               },
@@ -673,10 +727,7 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
                   <FormItem>
                     <FormLabel>{t('Title')}</FormLabel>
                     <FormControl>
-                      <Input
-                        placeholder={t('Help & Support')}
-                        {...field}
-                      />
+                      <Input placeholder={t('Help & Support')} {...field} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -813,7 +864,7 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
               },
             ]}
           />
-          <p className='text-sm text-muted-foreground'>
+          <p className='text-muted-foreground text-sm'>
             {t(
               'The ClawX client hides this entry when support is disabled or no enabled contact has a QR code.'
             )}
@@ -881,7 +932,9 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
                     />
                   </FormControl>
                   <FormDescription>
-                    {t('Keep announcements concise. The ClawX client displays plain text.')}
+                    {t(
+                      'Keep announcements concise. The ClawX client displays plain text.'
+                    )}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -910,10 +963,7 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
                       <SelectContent alignItemWithTrigger={false}>
                         <SelectGroup>
                           {levelOptions.map((option) => (
-                            <SelectItem
-                              key={option.value}
-                              value={option.value}
-                            >
+                            <SelectItem key={option.value} value={option.value}>
                               {t(option.label)}
                             </SelectItem>
                           ))}
@@ -1012,7 +1062,9 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
             ? t('Edit Support Contact')
             : t('Add Support Contact')
         }
-        description={t('Configure one QR code contact shown in the ClawX client.')}
+        description={t(
+          'Configure one QR code contact shown in the ClawX client.'
+        )}
         contentClassName='max-w-2xl'
         contentHeight='auto'
         bodyClassName='space-y-4'
@@ -1034,7 +1086,9 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
         <Form {...supportContactForm}>
           <form
             id={SUPPORT_CONTACT_FORM_ID}
-            onSubmit={supportContactForm.handleSubmit(handleSubmitSupportContact)}
+            onSubmit={supportContactForm.handleSubmit(
+              handleSubmitSupportContact
+            )}
             className='space-y-4'
           >
             <div className='grid gap-4 lg:grid-cols-2'>
@@ -1057,12 +1111,51 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>{t('WeCom QR Code URL')}</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder='https://example.com/support-qrcode.png'
-                        {...field}
+                    <div className='flex flex-col gap-2 sm:flex-row'>
+                      <FormControl>
+                        <Input
+                          placeholder='https://example.com/support-qrcode.png'
+                          {...field}
+                        />
+                      </FormControl>
+                      <input
+                        ref={supportQRCodeInputRef}
+                        type='file'
+                        accept={SUPPORT_QRCODE_ACCEPT}
+                        className='hidden'
+                        onChange={handleUploadSupportQRCode}
                       />
-                    </FormControl>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        onClick={handleChooseSupportQRCode}
+                        disabled={supportQRCodeUploading}
+                        className='shrink-0'
+                      >
+                        {supportQRCodeUploading ? (
+                          <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+                        ) : (
+                          <ImageUp className='mr-2 h-4 w-4' />
+                        )}
+                        {supportQRCodeUploading
+                          ? t('Uploading...')
+                          : t('Upload')}
+                      </Button>
+                    </div>
+                    <FormDescription>
+                      {t(
+                        'Upload a QR code image or paste an image URL. PNG, JPG, and GIF are supported, up to 2MB.'
+                      )}
+                    </FormDescription>
+                    {watchedSupportQRCodeUrl ? (
+                      <div className='mt-2 inline-flex rounded-lg border bg-white p-2'>
+                        <img
+                          src={watchedSupportQRCodeUrl}
+                          alt={t('Support QR code preview')}
+                          className='h-28 w-28 object-contain'
+                        />
+                      </div>
+                    ) : null}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -1076,7 +1169,10 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
                   <FormItem>
                     <FormLabel>{t('Service Hours')}</FormLabel>
                     <FormControl>
-                      <Input placeholder={t('Weekdays 9:00-18:00')} {...field} />
+                      <Input
+                        placeholder={t('Weekdays 9:00-18:00')}
+                        {...field}
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -1159,9 +1255,12 @@ export function ClawXClientSection(props: ClawXClientSectionProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>{t('Are you sure?')}</AlertDialogTitle>
             <AlertDialogDescription>
-              {t('{{count}} client announcements will be removed from the list.', {
-                count: selectedIds.length,
-              })}
+              {t(
+                '{{count}} client announcements will be removed from the list.',
+                {
+                  count: selectedIds.length,
+                }
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
