@@ -72,6 +72,8 @@ func InitOptionMap() {
 	common.OptionMap["Logo"] = common.Logo
 	common.OptionMap["ServerAddress"] = ""
 	common.OptionMap["VideoProxyAddress"] = ""
+	common.OptionMap["VideoProxySignSecret"] = system_setting.VideoProxySignSecret
+	common.OptionMap["VideoResultURLMode"] = system_setting.VideoResultURLMode
 	common.OptionMap["WorkerUrl"] = system_setting.WorkerUrl
 	common.OptionMap["WorkerValidKey"] = system_setting.WorkerValidKey
 	common.OptionMap["WorkerAllowHttpImageRequestEnabled"] = strconv.FormatBool(system_setting.WorkerAllowHttpImageRequestEnabled)
@@ -388,6 +390,10 @@ func updateOptionMap(key string, value string) (err error) {
 		system_setting.ServerAddress = value
 	case "VideoProxyAddress":
 		system_setting.VideoProxyAddress = value
+	case "VideoProxySignSecret":
+		system_setting.VideoProxySignSecret = value
+	case "VideoResultURLMode":
+		system_setting.VideoResultURLMode = value
 	case "WorkerUrl":
 		system_setting.WorkerUrl = value
 	case "WorkerValidKey":

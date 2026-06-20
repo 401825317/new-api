@@ -56,7 +56,7 @@ type responseTask struct {
 	Video              *struct {
 		URL string `json:"url,omitempty"`
 	} `json:"video,omitempty"`
-	Error              *struct {
+	Error *struct {
 		Message string `json:"message"`
 		Code    string `json:"code"`
 	} `json:"error,omitempty"`
@@ -352,6 +352,9 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 		resultURL := strings.TrimSpace(task.GetResultURL())
 		if resultURL != "" && !strings.HasPrefix(resultURL, "data:") {
 			proxyURL := taskcommon.BuildProxyURL(task.TaskID)
+			if grokProxyURL := taskcommon.BuildGrokVideoProxyURL(task); grokProxyURL != "" {
+				proxyURL = grokProxyURL
+			}
 			if data, err = sjson.SetBytes(data, "video.url", proxyURL); err != nil {
 				return nil, errors.Wrap(err, "set video url failed")
 			}

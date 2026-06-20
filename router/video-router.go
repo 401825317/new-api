@@ -8,6 +8,12 @@ import (
 )
 
 func SetVideoRouter(router *gin.Engine) {
+	grokProxyRouter := router.Group("/video")
+	grokProxyRouter.Use(middleware.RouteTag("relay"))
+	{
+		grokProxyRouter.GET("/grok/:task_id", controller.GrokVideoProxy)
+	}
+
 	// Video proxy: accepts either session auth (dashboard) or token auth (API clients)
 	videoProxyRouter := router.Group("/v1")
 	videoProxyRouter.Use(middleware.RouteTag("relay"))

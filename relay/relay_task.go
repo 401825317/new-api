@@ -397,6 +397,11 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 				taskResp = service.TaskErrorWrapper(err, "convert_to_openai_video_failed", http.StatusInternalServerError)
 				return
 			}
+			openAIVideoData, err = taskcommon.RewriteOpenAIVideoResultURL(openAIVideoData, originTask)
+			if err != nil {
+				taskResp = service.TaskErrorWrapper(err, "rewrite_openai_video_url_failed", http.StatusInternalServerError)
+				return
+			}
 			respBody = openAIVideoData
 			return
 		}
@@ -539,17 +544,7 @@ func mapTaskStatusToSimple(status model.TaskStatus) string {
 }
 
 func publicTaskResultURL(task *model.Task) string {
-	if task == nil {
-		return ""
-	}
-	resultURL := task.GetResultURL()
-	if resultURL == "" || task.Status != model.TaskStatusSuccess || strings.HasPrefix(resultURL, "data:") {
-		return resultURL
-	}
-	if strings.Contains(resultURL, "/v1/videos/"+task.TaskID+"/content") {
-		return resultURL
-	}
-	return taskcommon.BuildProxyURL(task.TaskID)
+	return taskcommon.PublicResultURL(task)
 }
 
 func TaskModel2Dto(task *model.Task) *dto.TaskDto {
