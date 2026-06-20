@@ -213,6 +213,13 @@ export const STATIC_I18N_KEYS = [
   'Support contact updated. Click "Save Settings" to apply.',
   'Support contact added. Click "Save Settings" to apply.',
   'Support contact deleted. Click "Save Settings" to apply.',
+  'Only PNG, JPG, or GIF images are supported.',
+  'QR code image must be smaller than 2MB.',
+  'Failed to upload QR code image',
+  'QR code image uploaded successfully',
+  'Uploading...',
+  'Upload a QR code image or paste an image URL. PNG, JPG, and GIF are supported, up to 2MB.',
+  'Support QR code preview',
   '{{count}} support contacts will be removed from the list.',
 
   // Models constants

@@ -11,6 +11,7 @@ func SetClawXRouter(apiRouter *gin.RouterGroup, anonymousRequestBodyLimit gin.Ha
 	{
 		clawXRoute.GET("/bootstrap", controller.ClawXBootstrap)
 		clawXRoute.GET("/client-config", controller.ClawXClientConfig)
+		clawXRoute.GET("/support-qrcodes/:file", controller.ClawXSupportQRCode)
 		clawXRoute.POST("/activation/check", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ClawXActivationCheck)
 		clawXRoute.POST("/verification/send-code", middleware.EmailVerificationRateLimit(), anonymousRequestBodyLimit, controller.ClawXSendVerificationCode)
 		clawXRoute.POST("/register", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ClawXRegister)
@@ -29,6 +30,7 @@ func SetClawXRouter(apiRouter *gin.RouterGroup, anonymousRequestBodyLimit gin.Ha
 			adminRoute.POST("/releases", controller.AdminCreateClawXRelease)
 			adminRoute.PUT("/releases/:id", controller.AdminUpdateClawXRelease)
 			adminRoute.DELETE("/releases/:id", controller.AdminDeleteClawXRelease)
+			adminRoute.POST("/support-qrcode", controller.AdminUploadClawXSupportQRCode)
 		}
 
 		authRoute := clawXRoute.Group("/")
