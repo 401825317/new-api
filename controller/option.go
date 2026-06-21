@@ -350,6 +350,15 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "clawx_client_setting.model_options":
+		err = clawx_client_setting.ValidateClientSettings(option.Value.(string), "ModelOptions")
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 	}
 	err = model.UpdateOption(option.Key, option.Value.(string))
 	if err != nil {

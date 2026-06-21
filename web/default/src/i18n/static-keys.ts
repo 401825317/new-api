@@ -207,6 +207,7 @@ export const STATIC_I18N_KEYS = [
   // ClawX client content settings
   'ClawX Client',
   'ClawX Important Announcements',
+  'ClawX Model Options',
   'ClawX Support Contact',
   'Help & Support',
   'Official Support',

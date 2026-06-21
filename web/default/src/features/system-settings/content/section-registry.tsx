@@ -22,6 +22,7 @@ import { AnnouncementsSection } from './announcements-section'
 import { ApiInfoSection } from './api-info-section'
 import { ChatSettingsSection } from './chat-settings-section'
 import { ClawXClientSection } from './clawx-client-section'
+import { ClawXModelOptionsSection } from './clawx-model-options-section'
 import { DashboardSection } from './dashboard-section'
 import { DrawingSettingsSection } from './drawing-settings-section'
 import { FAQSection } from './faq-section'
@@ -81,6 +82,16 @@ const CONTENT_SECTIONS = [
         announcementsData={settings['clawx_client_setting.announcements']}
         supportEnabled={settings['clawx_client_setting.support_enabled']}
         supportData={settings['clawx_client_setting.support']}
+      />
+    ),
+  },
+  {
+    id: 'clawx-model-options',
+    titleKey: 'ClawX Model Options',
+    build: (settings: ContentSettings) => (
+      <ClawXModelOptionsSection
+        key={settings['clawx_client_setting.model_options']}
+        data={settings['clawx_client_setting.model_options']}
       />
     ),
   },

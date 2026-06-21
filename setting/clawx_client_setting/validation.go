@@ -26,6 +26,8 @@ func ValidateClientSettings(settingsStr string, settingType string) error {
 		return validateAnnouncements(settingsStr)
 	case "Support":
 		return validateSupport(settingsStr)
+	case "ModelOptions":
+		return validateModelOptions(settingsStr)
 	default:
 		return fmt.Errorf("未知的 ClawX 客户端设置类型：%s", settingType)
 	}
@@ -176,6 +178,70 @@ func validateSupport(settingsStr string) error {
 	return nil
 }
 
+func validateModelOptions(settingsStr string) error {
+	var options ModelOptions
+	if err := common.UnmarshalJsonStr(settingsStr, &options); err != nil {
+		return fmt.Errorf("ClawX model options format error: %s", err.Error())
+	}
+	if len(options.Text.Models) > 100 {
+		return fmt.Errorf("text model count cannot exceed 100")
+	}
+	if len(options.Image.Models) > 30 {
+		return fmt.Errorf("image model count cannot exceed 30")
+	}
+	if len(options.Video.Models) > 30 {
+		return fmt.Errorf("video model count cannot exceed 30")
+	}
+	for i, item := range options.Text.Models {
+		index := i + 1
+		if strings.TrimSpace(item.Id) == "" {
+			return fmt.Errorf("text model %d is missing id", index)
+		}
+		if len(item.Label) > 80 {
+			return fmt.Errorf("text model %d label cannot exceed 80 characters", index)
+		}
+	}
+	for i, item := range options.Image.Models {
+		index := i + 1
+		if strings.TrimSpace(item.Id) == "" {
+			return fmt.Errorf("image model %d is missing id", index)
+		}
+		if len(item.Label) > 80 {
+			return fmt.Errorf("image model %d label cannot exceed 80 characters", index)
+		}
+		if len(item.Sizes) > 20 {
+			return fmt.Errorf("image model %d size count cannot exceed 20", index)
+		}
+		if len(item.Qualities) > 20 {
+			return fmt.Errorf("image model %d quality count cannot exceed 20", index)
+		}
+	}
+	for i, item := range options.Video.Models {
+		index := i + 1
+		if strings.TrimSpace(item.Id) == "" {
+			return fmt.Errorf("video model %d is missing id", index)
+		}
+		if len(item.Label) > 80 {
+			return fmt.Errorf("video model %d label cannot exceed 80 characters", index)
+		}
+		if len(item.Modes) > 10 {
+			return fmt.Errorf("video model %d mode count cannot exceed 10", index)
+		}
+		if len(item.Sizes) > 20 {
+			return fmt.Errorf("video model %d size count cannot exceed 20", index)
+		}
+		if len(item.Durations) > 20 {
+			return fmt.Errorf("video model %d duration count cannot exceed 20", index)
+		}
+		for _, duration := range item.Durations {
+			if duration <= 0 || duration > 600 {
+				return fmt.Errorf("video model %d has invalid duration: %d", index, duration)
+			}
+		}
+	}
+	return nil
+}
+
 func GetAnnouncements() []Announcement {
 	if !GetClientSetting().AnnouncementsEnabled {
 		return []Announcement{}
@@ -225,6 +291,14 @@ func GetSupport() Support {
 	return support
 }
 
+func GetModelOptions() ModelOptions {
+	var options ModelOptions
+	if err := common.UnmarshalJsonStr(GetClientSetting().ModelOptions, &options); err != nil {
+		_ = common.UnmarshalJsonStr(defaultModelOptionsJSON, &options)
+	}
+	return normalizeModelOptions(options)
+}
+
 func normalizeSupportContacts(support Support) []SupportContact {
 	contacts := make([]SupportContact, 0, len(support.Contacts)+1)
 	for _, contact := range support.Contacts {
@@ -264,6 +338,206 @@ func normalizeSupportContacts(support Support) []SupportContact {
 			Enabled:     true,
 		},
 	}
+}
+
+func normalizeModelOptions(options ModelOptions) ModelOptions {
+	defaults := ModelOptions{}
+	_ = common.UnmarshalJsonStr(defaultModelOptionsJSON, &defaults)
+
+	options.Text.Models = normalizeTextModels(options.Text.Models)
+	if len(options.Text.Models) == 0 {
+		options.Text.Models = normalizeTextModels(defaults.Text.Models)
+	}
+	options.Text.DefaultModel = fallbackString(options.Text.DefaultModel, defaults.Text.DefaultModel)
+	if !textModelExists(options.Text.Models, options.Text.DefaultModel) && len(options.Text.Models) > 0 {
+		options.Text.DefaultModel = options.Text.Models[0].Id
+	}
+
+	options.Image.Models = normalizeImageModels(options.Image.Models)
+	if len(options.Image.Models) == 0 {
+		options.Image.Models = normalizeImageModels(defaults.Image.Models)
+	}
+	options.Image.DefaultModel = fallbackString(options.Image.DefaultModel, defaults.Image.DefaultModel)
+	options.Image.DefaultSize = fallbackString(options.Image.DefaultSize, defaults.Image.DefaultSize)
+	options.Image.DefaultQuality = fallbackString(options.Image.DefaultQuality, defaults.Image.DefaultQuality)
+	if !imageModelExists(options.Image.Models, options.Image.DefaultModel) && len(options.Image.Models) > 0 {
+		options.Image.DefaultModel = options.Image.Models[0].Id
+	}
+
+	options.Video.Models = normalizeVideoModels(options.Video.Models)
+	if len(options.Video.Models) == 0 {
+		options.Video.Models = normalizeVideoModels(defaults.Video.Models)
+	}
+	options.Video.DefaultModel = fallbackString(options.Video.DefaultModel, defaults.Video.DefaultModel)
+	options.Video.DefaultSize = fallbackString(options.Video.DefaultSize, defaults.Video.DefaultSize)
+	if options.Video.DefaultDurationSeconds <= 0 {
+		options.Video.DefaultDurationSeconds = defaults.Video.DefaultDurationSeconds
+	}
+	if !videoModelExists(options.Video.Models, options.Video.DefaultModel) && len(options.Video.Models) > 0 {
+		options.Video.DefaultModel = options.Video.Models[0].Id
+	}
+
+	return options
+}
+
+func normalizeTextModels(models []ClientModelItem) []ClientModelItem {
+	seen := make(map[string]bool, len(models))
+	result := make([]ClientModelItem, 0, len(models))
+	for _, item := range models {
+		if item.Enabled != nil && !*item.Enabled {
+			continue
+		}
+		item.Id = strings.TrimSpace(item.Id)
+		if item.Id == "" || seen[item.Id] {
+			continue
+		}
+		item.Label = strings.TrimSpace(item.Label)
+		item.Description = strings.TrimSpace(item.Description)
+		if item.Label == "" {
+			item.Label = item.Id
+		}
+		seen[item.Id] = true
+		result = append(result, item)
+	}
+	return result
+}
+
+func normalizeImageModels(models []ClientImageModelItem) []ClientImageModelItem {
+	seen := make(map[string]bool, len(models))
+	result := make([]ClientImageModelItem, 0, len(models))
+	for _, item := range models {
+		if item.Enabled != nil && !*item.Enabled {
+			continue
+		}
+		item.Id = strings.TrimSpace(item.Id)
+		if item.Id == "" || seen[item.Id] {
+			continue
+		}
+		item.Label = strings.TrimSpace(item.Label)
+		item.Description = strings.TrimSpace(item.Description)
+		item.Sizes = normalizeStringList(item.Sizes)
+		item.Qualities = normalizeStringList(item.Qualities)
+		if len(item.Sizes) == 0 {
+			item.Sizes = []string{"1024x1024"}
+		}
+		if len(item.Qualities) == 0 {
+			item.Qualities = []string{"medium"}
+		}
+		item.DefaultSize = fallbackString(item.DefaultSize, firstString(item.Sizes, "1024x1024"))
+		item.DefaultQuality = fallbackString(item.DefaultQuality, firstString(item.Qualities, "medium"))
+		if item.Label == "" {
+			item.Label = item.Id
+		}
+		seen[item.Id] = true
+		result = append(result, item)
+	}
+	return result
+}
+
+func normalizeVideoModels(models []ClientVideoModelItem) []ClientVideoModelItem {
+	seen := make(map[string]bool, len(models))
+	result := make([]ClientVideoModelItem, 0, len(models))
+	for _, item := range models {
+		if item.Enabled != nil && !*item.Enabled {
+			continue
+		}
+		item.Id = strings.TrimSpace(item.Id)
+		if item.Id == "" || seen[item.Id] {
+			continue
+		}
+		item.Label = strings.TrimSpace(item.Label)
+		item.Description = strings.TrimSpace(item.Description)
+		item.Modes = normalizeStringList(item.Modes)
+		item.Sizes = normalizeStringList(item.Sizes)
+		item.Durations = normalizeDurationList(item.Durations)
+		if len(item.Modes) == 0 {
+			item.Modes = []string{"text-to-video"}
+		}
+		if len(item.Sizes) == 0 {
+			item.Sizes = []string{"1280x720"}
+		}
+		if len(item.Durations) == 0 {
+			item.Durations = []int{4}
+		}
+		item.DefaultSize = fallbackString(item.DefaultSize, firstString(item.Sizes, "1280x720"))
+		if item.DefaultDurationSeconds <= 0 {
+			item.DefaultDurationSeconds = firstInt(item.Durations, 4)
+		}
+		if item.Label == "" {
+			item.Label = item.Id
+		}
+		seen[item.Id] = true
+		result = append(result, item)
+	}
+	return result
+}
+
+func normalizeStringList(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
+}
+
+func normalizeDurationList(values []int) []int {
+	seen := make(map[int]bool, len(values))
+	result := make([]int, 0, len(values))
+	for _, value := range values {
+		if value <= 0 || value > 600 || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
+}
+
+func textModelExists(models []ClientModelItem, id string) bool {
+	for _, item := range models {
+		if item.Id == id {
+			return true
+		}
+	}
+	return false
+}
+
+func imageModelExists(models []ClientImageModelItem, id string) bool {
+	for _, item := range models {
+		if item.Id == id {
+			return true
+		}
+	}
+	return false
+}
+
+func videoModelExists(models []ClientVideoModelItem, id string) bool {
+	for _, item := range models {
+		if item.Id == id {
+			return true
+		}
+	}
+	return false
+}
+
+func firstString(values []string, fallback string) string {
+	if len(values) == 0 {
+		return fallback
+	}
+	return values[0]
+}
+
+func firstInt(values []int, fallback int) int {
+	if len(values) == 0 {
+		return fallback
+	}
+	return values[0]
 }
 
 func fallbackString(value string, fallback string) string {
