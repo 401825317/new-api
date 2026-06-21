@@ -54,6 +54,49 @@ function parseTaskData(data: unknown): unknown[] {
   return []
 }
 
+function parseTaskObject(data: unknown): Record<string, unknown> | null {
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    return data as Record<string, unknown>
+  }
+  if (typeof data !== 'string') return null
+  try {
+    const parsed = JSON.parse(data)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null
+  } catch {
+    return null
+  }
+}
+
+function nestedString(
+  value: Record<string, unknown> | null,
+  ...path: string[]
+): string | undefined {
+  let cursor: unknown = value
+  for (const key of path) {
+    if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) {
+      return undefined
+    }
+    cursor = (cursor as Record<string, unknown>)[key]
+  }
+  return typeof cursor === 'string' && cursor.trim() ? cursor : undefined
+}
+
+function getTaskVideoUrl(log: TaskLog): string | undefined {
+  const data = parseTaskObject(log.data)
+  return (
+    (typeof log.result_url === 'string' && log.result_url.trim()) ||
+    nestedString(data, 'result_url') ||
+    nestedString(data, 'url') ||
+    nestedString(data, 'video', 'url') ||
+    nestedString(data, 'metadata', 'url') ||
+    (typeof log.fail_reason === 'string' && log.fail_reason.startsWith('http')
+      ? log.fail_reason
+      : undefined)
+  )
+}
+
 function AudioPreviewCell({ log }: { log: TaskLog }) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
@@ -243,9 +286,22 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
           log.action === TASK_ACTIONS.REMIX_GENERATE
         const isSuccess = status === TASK_STATUS.SUCCESS
         const isUrl = failReason?.startsWith('http')
+        const videoUrl = getTaskVideoUrl(log) || `/v1/videos/${log.task_id}/content`
 
         if (isSuccess && isVideoTask && isUrl) {
-          const videoUrl = `/v1/videos/${log.task_id}/content`
+          return (
+            <a
+              href={videoUrl}
+              target='_blank'
+              rel='noopener noreferrer'
+              className='text-foreground text-xs hover:underline'
+            >
+              {t('Click to preview video')}
+            </a>
+          )
+        }
+
+        if (isSuccess && isVideoTask && videoUrl) {
           return (
             <a
               href={videoUrl}
