@@ -225,6 +225,36 @@ const (
 
 type BaseBilling struct{}
 
+const (
+	TaskSubmitResponseStatusContextKey = "task_submit_response_status"
+	TaskSubmitResponseBodyContextKey   = "task_submit_response_body"
+)
+
+func SetTaskSubmitResponse(c *gin.Context, status int, body any) {
+	if c == nil {
+		return
+	}
+	c.Set(TaskSubmitResponseStatusContextKey, status)
+	c.Set(TaskSubmitResponseBodyContextKey, body)
+}
+
+func GetTaskSubmitResponse(c *gin.Context) (int, any, bool) {
+	if c == nil {
+		return 0, nil, false
+	}
+	body, exists := c.Get(TaskSubmitResponseBodyContextKey)
+	if !exists {
+		return 0, nil, false
+	}
+	status := 0
+	if rawStatus, ok := c.Get(TaskSubmitResponseStatusContextKey); ok {
+		if v, ok := rawStatus.(int); ok {
+			status = v
+		}
+	}
+	return status, body, true
+}
+
 // EstimateBilling returns nil (no extra ratios; use base model price).
 func (BaseBilling) EstimateBilling(_ *gin.Context, _ *relaycommon.RelayInfo) map[string]float64 {
 	return nil
