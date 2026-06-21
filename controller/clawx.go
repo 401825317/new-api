@@ -228,6 +228,7 @@ func clawXClientConfigPayload() gin.H {
 			"wechatId":    firstSupportContact.WechatId,
 			"extraNote":   firstSupportContact.ExtraNote,
 		},
+		"modelOptions": clawx_client_setting.GetModelOptions(),
 	}
 }
 
