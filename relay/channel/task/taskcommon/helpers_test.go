@@ -58,10 +58,21 @@ func TestPublicResultURLDownstreamMode(t *testing.T) {
 	}
 }
 
+func TestPublicResultURLDownstreamModeBypassesSignedGrokProxy(t *testing.T) {
+	withVideoURLSettings(t, "https://zz-cn.lingzhiwuxian.com", "https://video.junfeiai.hk-proxy.lingzhiwuxian.com", "direct")
+	withVideoProxySignSecret(t, "secret")
+
+	rawURL := "https://assets.x.ai/videos/task.mp4"
+	got := PublicResultURL(grokVideoTask(rawURL))
+	if got != rawURL {
+		t.Fatalf("PublicResultURL() = %q, want raw upstream URL %q", got, rawURL)
+	}
+}
+
 func TestRewriteOpenAIVideoResultURL(t *testing.T) {
 	withVideoURLSettings(t, "https://zz-cn.lingzhiwuxian.com", "", "downstream")
 
-	data := []byte(`{"id":"task_public","status":"completed","metadata":{"url":"old"},"url":"old","result_url":"old","video":{"url":"old"}}`)
+	data := []byte(`{"id":"task_public","status":"completed"}`)
 	got, err := RewriteOpenAIVideoResultURL(data, finishedVideoTask())
 	if err != nil {
 		t.Fatal(err)
