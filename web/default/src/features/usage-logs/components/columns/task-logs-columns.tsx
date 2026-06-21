@@ -85,12 +85,14 @@ function nestedString(
 
 function getTaskVideoUrl(log: TaskLog): string | undefined {
   const data = parseTaskObject(log.data)
-  return (
-    (typeof log.result_url === 'string' && log.result_url.trim()) ||
+  const dataUrl =
     nestedString(data, 'result_url') ||
     nestedString(data, 'url') ||
     nestedString(data, 'video', 'url') ||
-    nestedString(data, 'metadata', 'url') ||
+    nestedString(data, 'metadata', 'url')
+  return (
+    dataUrl ||
+    (typeof log.result_url === 'string' && log.result_url.trim()) ||
     (typeof log.fail_reason === 'string' && log.fail_reason.startsWith('http')
       ? log.fail_reason
       : undefined)
