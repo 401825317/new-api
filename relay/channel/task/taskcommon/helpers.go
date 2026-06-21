@@ -19,7 +19,6 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -166,25 +165,16 @@ func PublicResultURL(task *model.Task) string {
 	if resultURL == "" || task.Status != model.TaskStatusSuccess || strings.HasPrefix(resultURL, "data:") {
 		return resultURL
 	}
+	if system_setting.UseDownstreamVideoResultURL() {
+		return resultURL
+	}
 	if grokProxyURL := BuildGrokVideoProxyURL(task); grokProxyURL != "" {
 		return grokProxyURL
-	}
-	if videoResultURLMode() == "downstream" {
-		return resultURL
 	}
 	if strings.Contains(resultURL, "/v1/videos/"+task.TaskID+"/content") {
 		return resultURL
 	}
 	return BuildProxyURL(task.TaskID)
-}
-
-func videoResultURLMode() string {
-	switch strings.ToLower(strings.TrimSpace(system_setting.VideoResultURLMode)) {
-	case "downstream", "upstream", "origin", "direct":
-		return "downstream"
-	default:
-		return "proxy"
-	}
 }
 
 // RewriteOpenAIVideoResultURL normalizes URL fields in OpenAI-compatible video responses.
@@ -200,9 +190,6 @@ func RewriteOpenAIVideoResultURL(data []byte, task *model.Task) ([]byte, error) 
 	}
 
 	for _, path := range []string{"url", "result_url", "video.url"} {
-		if !gjson.GetBytes(data, path).Exists() {
-			continue
-		}
 		if data, err = sjson.SetBytes(data, path, publicURL); err != nil {
 			return nil, fmt.Errorf("set %s failed: %w", path, err)
 		}

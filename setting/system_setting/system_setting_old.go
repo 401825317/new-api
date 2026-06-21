@@ -3,7 +3,7 @@ package system_setting
 var ServerAddress = "http://localhost:3000"
 var VideoProxyAddress = ""
 var VideoProxySignSecret = ""
-var VideoResultURLMode = "proxy"
+var VideoResultURLMode = VideoResultURLModeProxy
 var WorkerUrl = ""
 var WorkerValidKey = ""
 var WorkerAllowHttpImageRequestEnabled = false
