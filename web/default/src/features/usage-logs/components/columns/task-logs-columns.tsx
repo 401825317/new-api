@@ -288,7 +288,8 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
           log.action === TASK_ACTIONS.REMIX_GENERATE
         const isSuccess = status === TASK_STATUS.SUCCESS
         const isUrl = failReason?.startsWith('http')
-        const videoUrl = getTaskVideoUrl(log) || `/v1/videos/${log.task_id}/content`
+        const videoUrl =
+          getTaskVideoUrl(log) || `/v1/videos/${log.task_id}/content`
 
         if (isSuccess && isVideoTask && isUrl) {
           return (
