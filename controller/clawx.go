@@ -1447,7 +1447,13 @@ func ClawXUpdateLatest(c *gin.Context) {
 	if platform == "" {
 		platform = "mac"
 	}
-	if payload, ok, err := clawXLatestReleasePayload(channel, platform); err != nil {
+	packageType := strings.TrimSpace(c.Query("package_type"))
+	if packageType == "" {
+		packageType = strings.TrimSpace(c.Query("packageType"))
+	}
+	packageType = model.NormalizeClawXReleasePackageType(packageType)
+	arch := strings.TrimSpace(c.Query("arch"))
+	if payload, ok, err := clawXLatestReleasePayload(channel, platform, packageType, arch); err != nil {
 		common.ApiError(c, err)
 		return
 	} else if ok {
@@ -1456,6 +1462,10 @@ func ClawXUpdateLatest(c *gin.Context) {
 	}
 	common.ApiSuccess(c, gin.H{
 		"channel":      channel,
+		"platform":     platform,
+		"arch":         arch,
+		"packageType":  packageType,
+		"package_type": packageType,
 		"version":      clawXEnv("CLAWX_UPDATE_VERSION", ""),
 		"releaseDate":  clawXEnv("CLAWX_UPDATE_RELEASE_DATE", ""),
 		"releaseNotes": clawXEnv("CLAWX_UPDATE_RELEASE_NOTES", ""),

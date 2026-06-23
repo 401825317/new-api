@@ -35,23 +35,29 @@ import (
 )
 
 type clawXReleasePayload struct {
-	Channel      string `json:"channel"`
-	Platform     string `json:"platform"`
-	Arch         string `json:"arch"`
-	Version      string `json:"version"`
-	FileName     string `json:"file_name"`
-	FileURL      string `json:"file_url"`
-	Sha512       string `json:"sha512"`
-	Size         int64  `json:"size"`
-	ReleaseDate  string `json:"release_date"`
-	ReleaseNotes string `json:"release_notes"`
-	Enabled      bool   `json:"enabled"`
-	Mandatory    bool   `json:"mandatory"`
+	Channel          string `json:"channel"`
+	Platform         string `json:"platform"`
+	Arch             string `json:"arch"`
+	PackageType      string `json:"package_type"`
+	PackageTypeCamel string `json:"packageType"`
+	Version          string `json:"version"`
+	FileName         string `json:"file_name"`
+	FileURL          string `json:"file_url"`
+	Sha512           string `json:"sha512"`
+	Size             int64  `json:"size"`
+	ReleaseDate      string `json:"release_date"`
+	ReleaseNotes     string `json:"release_notes"`
+	Enabled          bool   `json:"enabled"`
+	Mandatory        bool   `json:"mandatory"`
 }
 
 func AdminListClawXReleases(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
-	releases, total, err := model.ListClawXReleases(c.Query("channel"), c.Query("platform"), pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	packageType := strings.TrimSpace(c.Query("package_type"))
+	if packageType == "" {
+		packageType = strings.TrimSpace(c.Query("packageType"))
+	}
+	releases, total, err := model.ListClawXReleases(c.Query("channel"), c.Query("platform"), packageType, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -151,10 +157,15 @@ func bindClawXReleasePayload(c *gin.Context) (*model.ClawXRelease, bool) {
 		common.ApiError(c, err)
 		return nil, false
 	}
+	packageType := strings.TrimSpace(payload.PackageType)
+	if packageType == "" {
+		packageType = strings.TrimSpace(payload.PackageTypeCamel)
+	}
 	release := &model.ClawXRelease{
 		Channel:      payload.Channel,
 		Platform:     payload.Platform,
 		Arch:         payload.Arch,
+		PackageType:  packageType,
 		Version:      payload.Version,
 		FileName:     payload.FileName,
 		FileURL:      payload.FileURL,
@@ -166,6 +177,10 @@ func bindClawXReleasePayload(c *gin.Context) (*model.ClawXRelease, bool) {
 		Mandatory:    payload.Mandatory,
 	}
 	model.NormalizeClawXRelease(release)
+	if !isSupportedClawXReleasePackageType(packageType) {
+		common.ApiErrorMsg(c, "package_type must be installer or portable_zip")
+		return nil, false
+	}
 	if release.Platform == "" || !isSupportedClawXReleasePlatform(release.Platform) {
 		common.ApiErrorMsg(c, "平台只能是 mac、win 或 linux")
 		return nil, false
@@ -189,6 +204,15 @@ func bindClawXReleasePayload(c *gin.Context) (*model.ClawXRelease, bool) {
 func isSupportedClawXReleasePlatform(platform string) bool {
 	switch platform {
 	case "mac", "win", "linux":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSupportedClawXReleasePackageType(packageType string) bool {
+	switch strings.ToLower(strings.TrimSpace(packageType)) {
+	case "", model.ClawXReleasePackageTypeInstaller, model.ClawXReleasePackageTypePortableZip:
 		return true
 	default:
 		return false
@@ -230,32 +254,41 @@ func clawXReleaseDownloadURL(release *model.ClawXRelease) string {
 	return rawURL
 }
 
-func clawXLatestReleasePayload(channel string, platform string) (gin.H, bool, error) {
-	releases, err := model.GetLatestClawXFeedReleases(channel, platform)
+func clawXLatestReleasePayload(channel string, platform string, packageType string, arch string) (gin.H, bool, error) {
+	release, err := model.GetLatestClawXRelease(channel, platform, packageType, arch)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	if len(releases) == 0 {
-		return nil, false, nil
-	}
-	primary := releases[0]
+	downloadURL := clawXReleaseDownloadURL(release)
+	feedURL := fmt.Sprintf("%s/api/clawx/updates/feed/%s", clawXOrigin(), url.PathEscape(release.Channel))
 	return gin.H{
-		"channel":      primary.Channel,
-		"platform":     primary.Platform,
-		"version":      primary.Version,
-		"releaseDate":  primary.ReleaseDate,
-		"releaseNotes": primary.ReleaseNotes,
-		"downloadUrl":  clawXReleaseDownloadURL(primary),
-		"mandatory":    primary.Mandatory,
-		"feedUrl":      fmt.Sprintf("%s/api/clawx/updates/feed/%s", clawXOrigin(), url.PathEscape(primary.Channel)),
+		"channel":       release.Channel,
+		"platform":      release.Platform,
+		"arch":          release.Arch,
+		"packageType":   release.PackageType,
+		"package_type":  release.PackageType,
+		"version":       release.Version,
+		"releaseDate":   release.ReleaseDate,
+		"release_date":  release.ReleaseDate,
+		"releaseNotes":  release.ReleaseNotes,
+		"release_notes": release.ReleaseNotes,
+		"downloadUrl":   downloadURL,
+		"download_url":  downloadURL,
+		"fileName":      release.FileName,
+		"file_name":     release.FileName,
+		"sha512":        release.Sha512,
+		"size":          release.Size,
+		"mandatory":     release.Mandatory,
+		"feedUrl":       feedURL,
+		"feed_url":      feedURL,
 	}, true, nil
 }
 
 func clawXBuildUpdateFeedYAML(channel string, platform string) (string, bool, error) {
-	releases, err := model.GetLatestClawXFeedReleases(channel, platform)
+	releases, err := model.GetLatestClawXFeedReleases(channel, platform, model.ClawXReleasePackageTypeInstaller)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", false, nil
 	}

@@ -18,12 +18,14 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 export type ClawXReleasePlatform = 'mac' | 'win' | 'linux'
+export type ClawXReleasePackageType = 'installer' | 'portable_zip'
 
 export type ClawXRelease = {
   id: number
   channel: string
   platform: ClawXReleasePlatform
   arch: string
+  package_type: ClawXReleasePackageType
   version: string
   file_name: string
   file_url: string
