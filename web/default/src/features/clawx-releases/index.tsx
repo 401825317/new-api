@@ -54,6 +54,7 @@ import {
 import type {
   ClawXRelease,
   ClawXReleaseFormData,
+  ClawXReleasePackageType,
   ClawXReleasePlatform,
 } from './types'
 
@@ -61,6 +62,7 @@ const DEFAULT_RELEASE: ClawXReleaseFormData = {
   channel: 'latest',
   platform: 'mac',
   arch: 'arm64',
+  package_type: 'installer',
   version: '',
   file_name: '',
   file_url: '',
@@ -83,6 +85,7 @@ function releaseToForm(release: ClawXRelease): ClawXReleaseFormData {
     channel: release.channel,
     platform: release.platform,
     arch: release.arch,
+    package_type: release.package_type || 'installer',
     version: release.version,
     file_name: release.file_name,
     file_url: release.file_url,
@@ -188,6 +191,7 @@ export function ClawXReleases() {
                 <TableRow>
                   <TableHead>{t('Channel')}</TableHead>
                   <TableHead>{t('Platform')}</TableHead>
+                  <TableHead>{t('Package Type')}</TableHead>
                   <TableHead>{t('Version')}</TableHead>
                   <TableHead>{t('File')}</TableHead>
                   <TableHead>{t('Size')}</TableHead>
@@ -199,11 +203,11 @@ export function ClawXReleases() {
               <TableBody>
                 {query.isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={8}>{t('Loading...')}</TableCell>
+                    <TableCell colSpan={9}>{t('Loading...')}</TableCell>
                   </TableRow>
                 ) : releases.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8}>
+                    <TableCell colSpan={9}>
                       {t('No ClawX versions found')}
                     </TableCell>
                   </TableRow>
@@ -213,6 +217,11 @@ export function ClawXReleases() {
                       <TableCell>{release.channel}</TableCell>
                       <TableCell>
                         {release.platform} / {release.arch}
+                      </TableCell>
+                      <TableCell>
+                        {release.package_type === 'portable_zip'
+                          ? t('Portable ZIP')
+                          : t('Installer')}
                       </TableCell>
                       <TableCell className='font-mono'>
                         {release.version}
@@ -301,6 +310,26 @@ export function ClawXReleases() {
                   value={form.arch}
                   onChange={(e) => updateForm('arch', e.target.value)}
                 />
+              </div>
+              <div className='grid gap-1.5'>
+                <Label>{t('Package Type')}</Label>
+                <NativeSelect
+                  className='w-full'
+                  value={form.package_type}
+                  onChange={(e) =>
+                    updateForm(
+                      'package_type',
+                      e.target.value as ClawXReleasePackageType
+                    )
+                  }
+                >
+                  <NativeSelectOption value='installer'>
+                    {t('Installer')}
+                  </NativeSelectOption>
+                  <NativeSelectOption value='portable_zip'>
+                    {t('Portable ZIP')}
+                  </NativeSelectOption>
+                </NativeSelect>
               </div>
               <div className='grid gap-1.5'>
                 <Label>{t('Version')}</Label>

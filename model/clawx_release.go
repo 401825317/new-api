@@ -22,6 +22,12 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"gorm.io/gorm"
+)
+
+const (
+	ClawXReleasePackageTypeInstaller   = "installer"
+	ClawXReleasePackageTypePortableZip = "portable_zip"
 )
 
 type ClawXRelease struct {
@@ -29,6 +35,7 @@ type ClawXRelease struct {
 	Channel      string `json:"channel" gorm:"type:varchar(32);index:idx_clawx_release_lookup,priority:1"`
 	Platform     string `json:"platform" gorm:"type:varchar(32);index:idx_clawx_release_lookup,priority:2"`
 	Arch         string `json:"arch" gorm:"type:varchar(32)"`
+	PackageType  string `json:"package_type" gorm:"type:varchar(32);default:installer;index"`
 	Version      string `json:"version" gorm:"type:varchar(64);index:idx_clawx_release_lookup,priority:3"`
 	FileName     string `json:"file_name" gorm:"type:varchar(255)"`
 	FileURL      string `json:"file_url" gorm:"type:text"`
@@ -49,6 +56,7 @@ func NormalizeClawXRelease(release *ClawXRelease) {
 	}
 	release.Platform = strings.ToLower(strings.TrimSpace(release.Platform))
 	release.Arch = strings.ToLower(strings.TrimSpace(release.Arch))
+	release.PackageType = NormalizeClawXReleasePackageType(release.PackageType)
 	release.Version = strings.TrimSpace(release.Version)
 	release.FileName = strings.TrimSpace(release.FileName)
 	release.FileURL = strings.TrimSpace(release.FileURL)
@@ -57,15 +65,36 @@ func NormalizeClawXRelease(release *ClawXRelease) {
 	release.ReleaseNotes = strings.TrimSpace(release.ReleaseNotes)
 }
 
-func ListClawXReleases(channel string, platform string, startIdx int, num int) (releases []*ClawXRelease, total int64, err error) {
+func NormalizeClawXReleasePackageType(packageType string) string {
+	switch strings.ToLower(strings.TrimSpace(packageType)) {
+	case ClawXReleasePackageTypePortableZip:
+		return ClawXReleasePackageTypePortableZip
+	default:
+		return ClawXReleasePackageTypeInstaller
+	}
+}
+
+func applyClawXReleasePackageTypeFilter(query *gorm.DB, packageType string) *gorm.DB {
+	packageType = NormalizeClawXReleasePackageType(packageType)
+	if packageType == ClawXReleasePackageTypeInstaller {
+		return query.Where("(package_type = ? OR package_type = '' OR package_type IS NULL)", packageType)
+	}
+	return query.Where("package_type = ?", packageType)
+}
+
+func ListClawXReleases(channel string, platform string, packageType string, startIdx int, num int) (releases []*ClawXRelease, total int64, err error) {
 	channel = strings.TrimSpace(channel)
 	platform = strings.ToLower(strings.TrimSpace(platform))
+	packageType = strings.TrimSpace(packageType)
 	query := DB.Model(&ClawXRelease{})
 	if channel != "" {
 		query = query.Where("channel = ?", channel)
 	}
 	if platform != "" {
 		query = query.Where("platform = ?", platform)
+	}
+	if packageType != "" {
+		query = applyClawXReleasePackageTypeFilter(query, packageType)
 	}
 	if err = query.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -95,6 +124,7 @@ func UpdateClawXRelease(release *ClawXRelease) error {
 		"channel",
 		"platform",
 		"arch",
+		"package_type",
 		"version",
 		"file_name",
 		"file_url",
@@ -112,22 +142,50 @@ func DeleteClawXReleaseById(id int) error {
 	return DB.Delete(&ClawXRelease{}, id).Error
 }
 
-func GetLatestClawXFeedReleases(channel string, platform string) ([]*ClawXRelease, error) {
+func GetLatestClawXRelease(channel string, platform string, packageType string, arch string) (*ClawXRelease, error) {
 	channel = strings.TrimSpace(channel)
 	if channel == "" {
 		channel = "latest"
 	}
 	platform = strings.ToLower(strings.TrimSpace(platform))
+	packageType = NormalizeClawXReleasePackageType(packageType)
+	arch = strings.ToLower(strings.TrimSpace(arch))
 	var latest ClawXRelease
-	err := DB.Where("channel = ? AND platform = ? AND enabled = ?", channel, platform, true).
-		Order("created_at desc, id desc").
-		First(&latest).Error
+	query := DB.Where("channel = ? AND platform = ? AND enabled = ?", channel, platform, true)
+	query = applyClawXReleasePackageTypeFilter(query, packageType)
+	if arch != "" {
+		err := query.Where("arch = ?", arch).Order("created_at desc, id desc").First(&latest).Error
+		if err == nil {
+			NormalizeClawXRelease(&latest)
+			return &latest, nil
+		}
+		if err != gorm.ErrRecordNotFound {
+			return nil, err
+		}
+		query = DB.Where("channel = ? AND platform = ? AND enabled = ? AND arch = ?", channel, platform, true, "universal")
+		query = applyClawXReleasePackageTypeFilter(query, packageType)
+	}
+	err := query.Order("created_at desc, id desc").First(&latest).Error
 	if err != nil {
 		return nil, err
 	}
+	NormalizeClawXRelease(&latest)
+	return &latest, nil
+}
+
+func GetLatestClawXFeedReleases(channel string, platform string, packageType string) ([]*ClawXRelease, error) {
+	latest, err := GetLatestClawXRelease(channel, platform, packageType, "")
+	if err != nil {
+		return nil, err
+	}
+	channel = latest.Channel
+	platform = latest.Platform
+	packageType = latest.PackageType
 
 	var releases []*ClawXRelease
-	err = DB.Where("channel = ? AND platform = ? AND version = ? AND enabled = ?", channel, platform, latest.Version, true).
+	query := DB.Where("channel = ? AND platform = ? AND version = ? AND enabled = ?", channel, platform, latest.Version, true)
+	query = applyClawXReleasePackageTypeFilter(query, packageType)
+	err = query.
 		Order("arch asc, id asc").
 		Find(&releases).Error
 	return releases, err

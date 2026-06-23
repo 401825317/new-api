@@ -25,6 +25,7 @@ func setupClawXControllerTest(t *testing.T) {
 		&model.ClawXDevice{},
 		&model.ClawXSession{},
 		&model.ClawXActivationTicket{},
+		&model.ClawXRelease{},
 		&model.Redemption{},
 		&model.Token{},
 		&model.Log{},
@@ -41,6 +42,11 @@ func setupClawXControllerTest(t *testing.T) {
 	common.QuotaForNewUser = 0
 	common.QuotaPerUnit = 500000
 	t.Setenv("CLAWX_ACTIVATION_REQUIRED", "true")
+}
+
+func createClawXReleaseForTest(t *testing.T, release model.ClawXRelease) {
+	t.Helper()
+	require.NoError(t, model.CreateClawXRelease(&release))
 }
 
 func performClawXRequest(handler gin.HandlerFunc, body string) *httptest.ResponseRecorder {
@@ -173,4 +179,127 @@ func TestClawXRegisterRejectsTakenUsernameWithoutConsumingActivationCode(t *test
 	var ticketCount int64
 	require.NoError(t, model.DB.Model(&model.ClawXActivationTicket{}).Count(&ticketCount).Error)
 	require.Equal(t, int64(0), ticketCount)
+}
+
+func TestClawXLatestReleasePayloadSeparatesInstallerAndPortableZip(t *testing.T) {
+	setupClawXControllerTest(t)
+	now := common.GetTimestamp()
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel:     "latest",
+		Platform:    "win",
+		Arch:        "x64",
+		PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version:     "0.4.9",
+		FileName:    "UClaw-0.4.9-win-x64.exe",
+		FileURL:     "https://example.com/UClaw-0.4.9-win-x64.exe",
+		Sha512:      "installer-sha",
+		Size:        101,
+		Enabled:     true,
+		CreatedAt:   now,
+	})
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel:     "latest",
+		Platform:    "win",
+		Arch:        "x64",
+		PackageType: model.ClawXReleasePackageTypePortableZip,
+		Version:     "0.5.0",
+		FileName:    "UClaw-0.5.0-win-x64-usb.zip",
+		FileURL:     "https://example.com/UClaw-0.5.0-win-x64-usb.zip",
+		Sha512:      "portable-sha",
+		Size:        202,
+		Enabled:     true,
+		CreatedAt:   now + 1,
+	})
+
+	installerPayload, ok, err := clawXLatestReleasePayload("latest", "win", model.ClawXReleasePackageTypeInstaller, "x64")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "0.4.9", installerPayload["version"])
+	require.Equal(t, model.ClawXReleasePackageTypeInstaller, installerPayload["package_type"])
+	require.Equal(t, "installer-sha", installerPayload["sha512"])
+
+	portablePayload, ok, err := clawXLatestReleasePayload("latest", "win", model.ClawXReleasePackageTypePortableZip, "x64")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "0.5.0", portablePayload["version"])
+	require.Equal(t, model.ClawXReleasePackageTypePortableZip, portablePayload["package_type"])
+	require.Equal(t, "UClaw-0.5.0-win-x64-usb.zip", portablePayload["fileName"])
+	require.Equal(t, int64(202), portablePayload["size"])
+	require.Equal(t, "portable-sha", portablePayload["sha512"])
+}
+
+func TestClawXInstallerFeedIgnoresPortableZipReleases(t *testing.T) {
+	setupClawXControllerTest(t)
+	now := common.GetTimestamp()
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel:     "latest",
+		Platform:    "win",
+		Arch:        "x64",
+		PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version:     "0.4.9",
+		FileName:    "UClaw-0.4.9-win-x64.exe",
+		FileURL:     "https://example.com/UClaw-0.4.9-win-x64.exe",
+		Sha512:      "installer-sha",
+		Size:        101,
+		Enabled:     true,
+		CreatedAt:   now,
+	})
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel:     "latest",
+		Platform:    "win",
+		Arch:        "x64",
+		PackageType: model.ClawXReleasePackageTypePortableZip,
+		Version:     "0.5.0",
+		FileName:    "UClaw-0.5.0-win-x64-usb.zip",
+		FileURL:     "https://example.com/UClaw-0.5.0-win-x64-usb.zip",
+		Sha512:      "portable-sha",
+		Size:        202,
+		Enabled:     true,
+		CreatedAt:   now + 1,
+	})
+
+	feed, ok, err := clawXBuildUpdateFeedYAML("latest", "win")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Contains(t, feed, "0.4.9")
+	require.Contains(t, feed, "installer-sha")
+	require.NotContains(t, feed, "0.5.0")
+	require.NotContains(t, feed, "portable-sha")
+}
+
+func TestClawXPortableLatestPrefersRequestedArchOverUniversal(t *testing.T) {
+	setupClawXControllerTest(t)
+	now := common.GetTimestamp()
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel:     "latest",
+		Platform:    "win",
+		Arch:        "universal",
+		PackageType: model.ClawXReleasePackageTypePortableZip,
+		Version:     "0.5.0",
+		FileName:    "UClaw-0.5.0-win-universal-usb.zip",
+		FileURL:     "https://example.com/UClaw-0.5.0-win-universal-usb.zip",
+		Sha512:      "universal-sha",
+		Size:        201,
+		Enabled:     true,
+		CreatedAt:   now + 1,
+	})
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel:     "latest",
+		Platform:    "win",
+		Arch:        "x64",
+		PackageType: model.ClawXReleasePackageTypePortableZip,
+		Version:     "0.5.0",
+		FileName:    "UClaw-0.5.0-win-x64-usb.zip",
+		FileURL:     "https://example.com/UClaw-0.5.0-win-x64-usb.zip",
+		Sha512:      "x64-sha",
+		Size:        202,
+		Enabled:     true,
+		CreatedAt:   now,
+	})
+
+	payload, ok, err := clawXLatestReleasePayload("latest", "win", model.ClawXReleasePackageTypePortableZip, "x64")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "x64", payload["arch"])
+	require.Equal(t, "x64-sha", payload["sha512"])
 }
