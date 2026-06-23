@@ -130,6 +130,9 @@ export const STATIC_I18N_KEYS = [
   'Expired time cannot be earlier than current time',
   'Quota must be a positive number',
   'Successfully created {{count}} redemption codes',
+  'Download activation codes?',
+  'The created activation codes can be downloaded as a TXT file, one code per line.',
+  'Not now',
 
   // Home page (constants-driven labels)
   'Cost Tracking',
