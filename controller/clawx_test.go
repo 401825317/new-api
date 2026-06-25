@@ -181,6 +181,29 @@ func TestClawXRegisterRejectsTakenUsernameWithoutConsumingActivationCode(t *test
 	require.Equal(t, int64(0), ticketCount)
 }
 
+func TestClawXRegisterRejectsUsernameThatWouldBeSilentlyNormalized(t *testing.T) {
+	setupClawXControllerTest(t)
+	createClawXActivationCode(t, "ACTIVATE-CN")
+
+	recorder := performClawXRequest(ClawXRegister, `{
+		"account":"测试abc123",
+		"password":"password123",
+		"activationCode":"ACTIVATE-CN",
+		"device":{"id":"device-cn","name":"Mac"}
+	}`)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"code":"invalid_username"`)
+
+	var count int64
+	require.NoError(t, model.DB.Model(&model.User{}).Where("username IN ?", []string{"abc123", "123"}).Count(&count).Error)
+	require.Equal(t, int64(0), count)
+
+	var redemption model.Redemption
+	require.NoError(t, model.DB.Where("`key` = ?", "ACTIVATE-CN").First(&redemption).Error)
+	require.Equal(t, common.RedemptionCodeStatusEnabled, redemption.Status)
+}
+
 func TestClawXLatestReleasePayloadSeparatesInstallerAndPortableZip(t *testing.T) {
 	setupClawXControllerTest(t)
 	now := common.GetTimestamp()

@@ -26,7 +26,7 @@ import (
 const (
 	defaultClawXOrigin       = "https://zz-cn.lingzhiwuxian.com"
 	defaultClawXProviderKey  = "lingzhiwuxian"
-	defaultClawXProviderName = "灵智无限"
+	defaultClawXProviderName = "零至无限"
 	defaultClawXModel        = "smart-latest"
 
 	defaultClawXAuthAccessTTLSeconds  = 24 * 60 * 60
@@ -303,11 +303,16 @@ func clawXActivationErrorMessage(code string) string {
 	}
 }
 
-func normalizeClawXUsernameBase(account string) string {
+func clawXUsernameSource(account string) string {
 	base := strings.TrimSpace(account)
 	if at := strings.Index(base, "@"); at > 0 {
 		base = base[:at]
 	}
+	return base
+}
+
+func normalizeClawXUsernameBase(account string) string {
+	base := clawXUsernameSource(account)
 	base = strings.ToLower(base)
 	var b strings.Builder
 	for _, r := range base {
@@ -318,6 +323,15 @@ func normalizeClawXUsernameBase(account string) string {
 	username := strings.Trim(b.String(), "-_")
 	if len(username) > model.UserNameMaxLength {
 		username = username[:model.UserNameMaxLength]
+	}
+	return username
+}
+
+func validateClawXRegisterUsername(account string) string {
+	source := clawXUsernameSource(account)
+	username := normalizeClawXUsernameBase(account)
+	if username == "" || username != strings.ToLower(source) {
+		return ""
 	}
 	return username
 }
@@ -658,7 +672,7 @@ func ClawXRegister(c *gin.Context) {
 		clawXApiError(c, http.StatusBadRequest, "device_required", "缺少设备 ID")
 		return
 	}
-	username := normalizeClawXUsernameBase(account)
+	username := validateClawXRegisterUsername(account)
 	if username == "" {
 		clawXApiError(c, http.StatusBadRequest, "invalid_username", "用户名格式错误")
 		return
