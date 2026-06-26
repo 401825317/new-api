@@ -84,9 +84,9 @@ func createClawXActivationCode(t *testing.T, key string) {
 	}).Error)
 }
 
-func TestClawXLoginRequiresActivationForNewDevice(t *testing.T) {
+func TestClawXLoginNewDeviceDoesNotRequireActivationCode(t *testing.T) {
 	setupClawXControllerTest(t)
-	createClawXTestUser(t, "alice")
+	user := createClawXTestUser(t, "alice")
 
 	recorder := performClawXRequest(ClawXLogin, `{
 		"account":"alice@example.com",
@@ -94,12 +94,14 @@ func TestClawXLoginRequiresActivationForNewDevice(t *testing.T) {
 		"device":{"id":"device-new","name":"Mac"}
 	}`)
 
-	require.Equal(t, http.StatusForbidden, recorder.Code)
-	require.Contains(t, recorder.Body.String(), `"code":"device_authorization_required"`)
-	require.Contains(t, recorder.Body.String(), "当前设备需要激活码授权")
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"success":true`)
+	device, err := model.GetClawXDevice(user.Id, "device-new")
+	require.NoError(t, err)
+	require.Equal(t, model.ClawXDeviceStatusActive, device.Status)
 }
 
-func TestClawXLoginAuthorizesNewDeviceWithActivationCode(t *testing.T) {
+func TestClawXLoginIgnoresActivationCodeAndDoesNotConsumeIt(t *testing.T) {
 	setupClawXControllerTest(t)
 	user := createClawXTestUser(t, "alice")
 	createClawXActivationCode(t, "ACTIVATE-1")
@@ -118,8 +120,8 @@ func TestClawXLoginAuthorizesNewDeviceWithActivationCode(t *testing.T) {
 	require.Equal(t, model.ClawXDeviceStatusActive, device.Status)
 	var redemption model.Redemption
 	require.NoError(t, model.DB.Where("`key` = ?", "ACTIVATE-1").First(&redemption).Error)
-	require.Equal(t, common.RedemptionCodeStatusUsed, redemption.Status)
-	require.Equal(t, user.Id, redemption.UsedUserId)
+	require.Equal(t, common.RedemptionCodeStatusEnabled, redemption.Status)
+	require.Equal(t, 0, redemption.UsedUserId)
 }
 
 func TestClawXLoginExistingActiveDeviceDoesNotNeedActivationCode(t *testing.T) {

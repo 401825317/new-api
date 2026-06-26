@@ -779,63 +779,14 @@ func ClawXLogin(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	deviceAuthorized := deviceExists && device.Status == model.ClawXDeviceStatusActive
-	if !deviceAuthorized && clawXBoolEnv("CLAWX_ACTIVATION_REQUIRED", true) {
-		if strings.TrimSpace(req.ActivationTicket) == "" && strings.TrimSpace(req.ActivationCode) == "" {
-			clawXApiError(c, http.StatusForbidden, "device_authorization_required", "当前设备需要激活码授权后才能使用")
-			return
-		}
-		ticket, redemption, activationErr := resolveClawXActivationTicket(req.ActivationTicket, req.ActivationCode, devicePayload.DeviceId)
-		if activationErr != nil {
-			code := activationErr.Error()
-			clawXApiError(c, http.StatusBadRequest, code, clawXActivationErrorMessage(code))
-			return
-		}
-		err = model.DB.Transaction(func(tx *gorm.DB) error {
-			devicePayload.UserId = user.Id
-			devicePayload.Status = model.ClawXDeviceStatusActive
-			now := common.GetTimestamp()
-			devicePayload.CreatedAt = now
-			devicePayload.UpdatedAt = now
-			devicePayload.LastSeenAt = now
-			if deviceExists {
-				if err := tx.Model(&model.ClawXDevice{}).
-					Where("user_id = ? AND device_id = ?", user.Id, devicePayload.DeviceId).
-					Updates(map[string]interface{}{
-						"name":         devicePayload.Name,
-						"platform":     devicePayload.Platform,
-						"arch":         devicePayload.Arch,
-						"app_version":  devicePayload.AppVersion,
-						"status":       model.ClawXDeviceStatusActive,
-						"updated_at":   now,
-						"last_seen_at": now,
-					}).Error; err != nil {
-					return err
-				}
-			} else {
-				if err := tx.Create(&devicePayload).Error; err != nil {
-					return err
-				}
-			}
-			return consumeClawXActivationForUser(tx, ticket, redemption, user.Id)
-		})
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		device = &devicePayload
-	} else if deviceAuthorized {
-		device, err = model.UpsertClawXDevice(user.Id, devicePayload)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-	} else {
-		device, err = model.UpsertClawXDevice(user.Id, devicePayload)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
+	if deviceExists && device.Status == model.ClawXDeviceStatusRevoked {
+		clawXApiError(c, http.StatusForbidden, "device_revoked", "当前设备授权已被撤销，请联系管理员")
+		return
+	}
+	device, err = model.UpsertClawXDevice(user.Id, devicePayload)
+	if err != nil {
+		common.ApiError(c, err)
+		return
 	}
 	model.UpdateUserLastLoginAt(user.Id)
 	response, err := createClawXAuthResponse(user, *device)

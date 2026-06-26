@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="format-detection" content="telephone=no,email=no,address=no" />
+    <title>帮助与客服</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f7f9;
+        --card: #ffffff;
+        --text: #15171c;
+        --muted: #626977;
+        --line: #e6e8ee;
+        --accent: #0f766e;
+        --accent-soft: #e8f5f3;
+        --shadow: 0 16px 48px rgba(15, 23, 42, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        line-height: 1.5;
+      }
+
+      .page {
+        min-height: 100vh;
+        padding: calc(env(safe-area-inset-top) + 22px) 16px
+          calc(env(safe-area-inset-bottom) + 26px);
+      }
+
+      .shell {
+        width: min(100%, 460px);
+        margin: 0 auto;
+      }
+
+      .header {
+        padding: 8px 4px 18px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 10px;
+        border: 1px solid rgba(15, 118, 110, 0.18);
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 600;
+        padding: 5px 10px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 25px;
+        line-height: 1.22;
+        letter-spacing: 0;
+      }
+
+      .description {
+        margin: 9px 0 0;
+        color: var(--muted);
+        font-size: 15px;
+      }
+
+      .stack {
+        display: grid;
+        gap: 14px;
+      }
+
+      .contact {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--card);
+        box-shadow: var(--shadow);
+        padding: 18px 16px;
+        text-align: center;
+      }
+
+      .contact-title {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 700;
+      }
+
+      .contact-desc {
+        margin: 6px auto 0;
+        color: var(--muted);
+        font-size: 13px;
+        max-width: 320px;
+      }
+
+      .qr-wrap {
+        width: min(72vw, 260px);
+        aspect-ratio: 1;
+        margin: 16px auto 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        padding: 12px;
+        display: grid;
+        place-items: center;
+      }
+
+      .qr-wrap img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+
+      .meta {
+        display: grid;
+        gap: 8px;
+        margin-top: 14px;
+      }
+
+      .meta-row {
+        border-radius: 8px;
+        background: #f8fafc;
+        color: #404653;
+        font-size: 13px;
+        padding: 10px 12px;
+        word-break: break-word;
+      }
+
+      .copy-button {
+        width: 100%;
+        min-height: 42px;
+        border: 1px solid rgba(15, 118, 110, 0.28);
+        border-radius: 8px;
+        background: #fff;
+        color: var(--accent);
+        font: inherit;
+        font-size: 14px;
+        font-weight: 650;
+        padding: 10px 12px;
+      }
+
+      .copy-button:active {
+        background: var(--accent-soft);
+      }
+
+      .state {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--card);
+        color: var(--muted);
+        padding: 18px;
+        text-align: center;
+        font-size: 14px;
+      }
+
+      .footer {
+        margin-top: 18px;
+        color: #8a91a0;
+        text-align: center;
+        font-size: 12px;
+      }
+
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <div class="shell">
+        <header class="header">
+          <div class="eyebrow">帮助与客服</div>
+          <h1 id="title">联系官方客服</h1>
+          <p id="description" class="description">
+            扫码添加客服，可咨询账号、充值、模型使用等问题。
+          </p>
+        </header>
+
+        <section id="contacts" class="stack" aria-live="polite">
+          <div class="state">正在加载客服信息...</div>
+        </section>
+
+        <p class="footer">请长按二维码识别或保存后添加客服</p>
+      </div>
+    </main>
+
+    <template id="contact-template">
+      <article class="contact">
+        <h2 class="contact-title"></h2>
+        <p class="contact-desc hidden"></p>
+        <div class="qr-wrap">
+          <img alt="官方客服二维码" loading="eager" />
+        </div>
+        <div class="meta"></div>
+      </article>
+    </template>
+
+    <script>
+      (function () {
+        var fallbackTitle = "联系官方客服";
+        var fallbackDescription =
+          "扫码添加客服，可咨询账号、充值、模型使用等问题。";
+
+        function text(value) {
+          return typeof value === "string" ? value.trim() : "";
+        }
+
+        function resolveUrl(url) {
+          var raw = text(url);
+          if (!raw) return "";
+          try {
+            return new URL(raw, window.location.origin).toString();
+          } catch (_) {
+            return raw;
+          }
+        }
+
+        function normalizeContact(item, index) {
+          if (!item || item.enabled === false) return null;
+          var qrCodeUrl = resolveUrl(item.qrCodeUrl);
+          if (!qrCodeUrl) return null;
+          return {
+            id: text(item.id) || "support-" + index,
+            label: text(item.label) || "官方客服",
+            description: text(item.description),
+            qrCodeUrl: qrCodeUrl,
+            workHours: text(item.workHours),
+            wechatId: text(item.wechatId),
+            extraNote: text(item.extraNote),
+          };
+        }
+
+        function normalizeSupport(payload) {
+          var support = payload && payload.support ? payload.support : null;
+          if (!support || support.enabled === false) return null;
+
+          var contacts = Array.isArray(support.contacts)
+            ? support.contacts
+                .map(function (item, index) {
+                  return normalizeContact(item, index);
+                })
+                .filter(Boolean)
+            : [];
+
+          if (!contacts.length && support.qrCodeUrl) {
+            var legacy = normalizeContact(
+              {
+                label: support.title || "官方客服",
+                description: support.description,
+                qrCodeUrl: support.qrCodeUrl,
+                workHours: support.workHours,
+                wechatId: support.wechatId,
+                extraNote: support.extraNote,
+              },
+              0,
+            );
+            if (legacy) contacts.push(legacy);
+          }
+
+          if (!contacts.length) return null;
+          return {
+            title: text(support.title) || fallbackTitle,
+            description: text(support.description) || fallbackDescription,
+            contacts: contacts,
+          };
+        }
+
+        function appendMeta(container, content) {
+          if (!content) return;
+          var row = document.createElement("div");
+          row.className = "meta-row";
+          row.textContent = content;
+          container.appendChild(row);
+        }
+
+        function appendWechat(container, wechatId) {
+          if (!wechatId) return;
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = "copy-button";
+          button.textContent = "复制微信号：" + wechatId;
+          button.addEventListener("click", function () {
+            if (!navigator.clipboard || !navigator.clipboard.writeText) {
+              button.textContent = "微信号：" + wechatId;
+              return;
+            }
+            navigator.clipboard
+              .writeText(wechatId)
+              .then(function () {
+                button.textContent = "已复制微信号：" + wechatId;
+                setTimeout(function () {
+                  button.textContent = "复制微信号：" + wechatId;
+                }, 1800);
+              })
+              .catch(function () {
+                button.textContent = "微信号：" + wechatId;
+              });
+          });
+          container.appendChild(button);
+        }
+
+        function render(support) {
+          document.title = support.title || "帮助与客服";
+          document.getElementById("title").textContent = support.title;
+          document.getElementById("description").textContent =
+            support.description;
+
+          var list = document.getElementById("contacts");
+          var template = document.getElementById("contact-template");
+          list.innerHTML = "";
+
+          support.contacts.forEach(function (contact) {
+            var node = template.content.firstElementChild.cloneNode(true);
+            node.querySelector(".contact-title").textContent = contact.label;
+
+            var desc = node.querySelector(".contact-desc");
+            if (contact.description) {
+              desc.textContent = contact.description;
+              desc.classList.remove("hidden");
+            }
+
+            var img = node.querySelector("img");
+            img.src = contact.qrCodeUrl;
+            img.alt = contact.label + "二维码";
+
+            var meta = node.querySelector(".meta");
+            appendMeta(meta, contact.workHours);
+            appendWechat(meta, contact.wechatId);
+            appendMeta(meta, contact.extraNote);
+
+            list.appendChild(node);
+          });
+        }
+
+        function renderState(message) {
+          document.getElementById("contacts").innerHTML =
+            '<div class="state">' + message + "</div>";
+        }
+
+        fetch("/api/clawx/client-config", {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        })
+          .then(function (response) {
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            return response.json();
+          })
+          .then(function (body) {
+            var payload = body && body.data ? body.data : body;
+            var support = normalizeSupport(payload);
+            if (!support) {
+              renderState("客服信息暂未配置，请稍后再试。");
+              return;
+            }
+            render(support);
+          })
+          .catch(function () {
+            renderState("客服信息加载失败，请稍后重新扫码。");
+          });
+      })();
+    </script>
+  </body>
+</html>
