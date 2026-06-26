@@ -15,10 +15,11 @@ import (
 
 // ThemeAssets holds the embedded frontend assets for both themes.
 type ThemeAssets struct {
-	DefaultBuildFS   embed.FS
-	DefaultIndexPage []byte
-	ClassicBuildFS   embed.FS
-	ClassicIndexPage []byte
+	DefaultBuildFS    embed.FS
+	DefaultIndexPage  []byte
+	SupportQRCodePage []byte
+	ClassicBuildFS    embed.FS
+	ClassicIndexPage  []byte
 }
 
 func SetWebRouter(router *gin.Engine, assets ThemeAssets) {
@@ -29,6 +30,11 @@ func SetWebRouter(router *gin.Engine, assets ThemeAssets) {
 	router.Use(gzip.Gzip(gzip.DefaultCompression))
 	router.Use(middleware.GlobalWebRateLimit())
 	router.Use(middleware.Cache())
+	router.GET("/kfqrcode.html", func(c *gin.Context) {
+		c.Set(middleware.RouteTagKey, "web")
+		c.Header("Cache-Control", "no-cache")
+		c.Data(http.StatusOK, "text/html; charset=utf-8", assets.SupportQRCodePage)
+	})
 	router.Use(static.Serve("/", themeFS))
 	router.NoRoute(func(c *gin.Context) {
 		c.Set(middleware.RouteTagKey, "web")

@@ -41,6 +41,9 @@ var buildFS embed.FS
 //go:embed web/default/dist/index.html
 var indexPage []byte
 
+//go:embed web/default/dist/kfqrcode.html
+var supportQRCodePage []byte
+
 //go:embed web/classic/dist
 var classicBuildFS embed.FS
 
@@ -194,10 +197,11 @@ func main() {
 
 	// 设置路由
 	router.SetRouter(server, router.ThemeAssets{
-		DefaultBuildFS:   buildFS,
-		DefaultIndexPage: indexPage,
-		ClassicBuildFS:   classicBuildFS,
-		ClassicIndexPage: classicIndexPage,
+		DefaultBuildFS:    buildFS,
+		DefaultIndexPage:  indexPage,
+		SupportQRCodePage: supportQRCodePage,
+		ClassicBuildFS:    classicBuildFS,
+		ClassicIndexPage:  classicIndexPage,
 	})
 	var port = os.Getenv("PORT")
 	if port == "" {
