@@ -2,6 +2,7 @@ package taskcommon
 
 import (
 	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -139,5 +140,20 @@ func TestVerifyGrokVideoProxySignatureRejectsExpired(t *testing.T) {
 	sig := signGrokVideoProxy("task_grok", exp, "secret")
 	if VerifyGrokVideoProxySignature("task_grok", "0", sig) {
 		t.Fatal("expired signature should be rejected")
+	}
+}
+
+func TestSignedVideoProxyURLNeedsRefresh(t *testing.T) {
+	exp := time.Now().Add(30 * time.Minute).Unix()
+	rawURL := "https://video.junfeiai.hk-proxy.lingzhiwuxian.com/video/grok/task_grok?exp=" + strconv.FormatInt(exp, 10) + "&sig=abc"
+	if !SignedVideoProxyURLNeedsRefresh(rawURL, time.Hour) {
+		t.Fatal("signed video proxy URL expiring within refresh window should need refresh")
+	}
+}
+
+func TestSignedVideoProxyURLNeedsRefreshRejectsPlainURL(t *testing.T) {
+	rawURL := "https://assets.x.ai/videos/task.mp4"
+	if SignedVideoProxyURLNeedsRefresh(rawURL, time.Hour) {
+		t.Fatal("plain upstream URL should not need signed proxy refresh")
 	}
 }

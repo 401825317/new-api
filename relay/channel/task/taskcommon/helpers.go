@@ -115,6 +115,39 @@ func VerifyGrokVideoProxySignature(taskID, expValue, sig string) bool {
 	return subtle.ConstantTimeCompare([]byte(want), []byte(strings.TrimSpace(sig))) == 1
 }
 
+func SignedVideoProxyURLNeedsRefresh(rawURL string, refreshBefore time.Duration) bool {
+	exp, ok := SignedVideoProxyURLExpiration(rawURL)
+	if !ok {
+		return false
+	}
+	if refreshBefore < 0 {
+		refreshBefore = 0
+	}
+	return time.Until(time.Unix(exp, 0)) <= refreshBefore
+}
+
+func SignedVideoProxyURLExpiration(rawURL string) (int64, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" {
+		return 0, false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return 0, false
+	}
+	if !strings.HasPrefix(parsed.EscapedPath(), "/video/grok/") {
+		return 0, false
+	}
+	query := parsed.Query()
+	if strings.TrimSpace(query.Get("sig")) == "" {
+		return 0, false
+	}
+	exp, err := strconv.ParseInt(strings.TrimSpace(query.Get("exp")), 10, 64)
+	if err != nil || exp <= 0 {
+		return 0, false
+	}
+	return exp, true
+}
+
 func IsGrokVideoProxyCandidate(task *model.Task) bool {
 	if task == nil || task.Status != model.TaskStatusSuccess {
 		return false

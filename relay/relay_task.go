@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -21,6 +22,8 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
+
+const signedVideoProxyRefreshBefore = time.Hour
 
 type TaskSubmitResult struct {
 	UpstreamTaskID string
@@ -544,7 +547,169 @@ func mapTaskStatusToSimple(status model.TaskStatus) string {
 }
 
 func publicTaskResultURL(task *model.Task) string {
+	refreshExpiringSignedVideoURL(task)
+	if task != nil && taskcommon.SignedVideoProxyURLNeedsRefresh(task.GetResultURL(), 0) {
+		return taskcommon.BuildProxyURL(task.TaskID)
+	}
 	return taskcommon.PublicResultURL(task)
+}
+
+func RefreshExpiringVideoResultURL(task *model.Task) {
+	refreshExpiringSignedVideoURL(task)
+}
+
+func refreshExpiringSignedVideoURL(task *model.Task) {
+	if task == nil || task.Status != model.TaskStatusSuccess {
+		return
+	}
+	if !taskcommon.SignedVideoProxyURLNeedsRefresh(task.GetResultURL(), signedVideoProxyRefreshBefore) {
+		return
+	}
+	refreshTaskFromUpstream(task)
+}
+
+func refreshTaskFromUpstream(task *model.Task) bool {
+	if task == nil {
+		return false
+	}
+	channelModel, err := model.GetChannelById(task.ChannelId, true)
+	if err != nil || channelModel == nil || channelModel.Status != common.ChannelStatusEnabled {
+		return false
+	}
+	adaptor := GetTaskAdaptor(constant.TaskPlatform(strconv.Itoa(channelModel.Type)))
+	if adaptor == nil {
+		return false
+	}
+	baseURL := constant.ChannelBaseURLs[channelModel.Type]
+	if channelModel.GetBaseURL() != "" {
+		baseURL = channelModel.GetBaseURL()
+	}
+	key := taskRefreshChannelKey(channelModel, task)
+	resp, err := adaptor.FetchTask(baseURL, key, map[string]any{
+		"task_id": task.GetUpstreamTaskID(),
+		"action":  task.Action,
+	}, channelModel.GetSetting().Proxy)
+	if err != nil || resp == nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false
+	}
+	taskInfo, data, ok := parseRefreshedTask(body, adaptor)
+	if !ok || taskInfo == nil {
+		return false
+	}
+	snap := task.Snapshot()
+	if taskInfo.Status != "" {
+		task.Status = model.TaskStatus(taskInfo.Status)
+	}
+	if taskInfo.Progress != "" {
+		task.Progress = taskInfo.Progress
+	}
+	if taskInfo.Reason != "" {
+		task.FailReason = taskInfo.Reason
+	}
+	if taskInfo.Url != "" && !strings.HasPrefix(taskInfo.Url, "data:") {
+		task.PrivateData.ResultURL = taskInfo.Url
+	}
+	if taskInfo.Url != "" {
+		task.FailReason = taskInfo.Url
+	}
+	if len(data) > 0 {
+		task.Data = data
+	}
+	if snap.Equal(task.Snapshot()) {
+		return true
+	}
+	_, _ = task.UpdateWithStatus(snap.Status)
+	return true
+}
+
+func taskRefreshChannelKey(channelModel *model.Channel, task *model.Task) string {
+	if task != nil {
+		if key := strings.TrimSpace(task.PrivateData.Key); key != "" {
+			return key
+		}
+	}
+	if channelModel == nil {
+		return ""
+	}
+	for _, key := range channelModel.GetKeys() {
+		if key = strings.TrimSpace(key); key != "" {
+			return key
+		}
+	}
+	return strings.TrimSpace(channelModel.Key)
+}
+
+func parseRefreshedTask(body []byte, adaptor channel.TaskAdaptor) (*relaycommon.TaskInfo, []byte, bool) {
+	var responseItems dto.TaskResponse[dto.TaskDto]
+	if err := common.Unmarshal(body, &responseItems); err == nil && responseItems.IsSuccess() {
+		t := responseItems.Data
+		resultURL := strings.TrimSpace(t.ResultURL)
+		if resultURL == "" {
+			resultURL = strings.TrimSpace(t.FailReason)
+		}
+		return &relaycommon.TaskInfo{
+			TaskID:   t.TaskID,
+			Status:   t.Status,
+			Url:      resultURL,
+			Progress: t.Progress,
+			Reason:   t.FailReason,
+		}, t.Data, true
+	}
+	if adaptor == nil {
+		return nil, nil, false
+	}
+	taskInfo, err := adaptor.ParseTaskResult(body)
+	if err != nil {
+		return nil, nil, false
+	}
+	return taskInfo, redactTaskRefreshBody(body), true
+}
+
+func redactTaskRefreshBody(body []byte) []byte {
+	var raw any
+	if err := common.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+	cleaned := redactTaskRefreshValue(raw)
+	data, err := common.Marshal(cleaned)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+func redactTaskRefreshValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			lowerKey := strings.ToLower(key)
+			if strings.Contains(lowerKey, "key") ||
+				strings.Contains(lowerKey, "token") ||
+				strings.Contains(lowerKey, "authorization") {
+				out[key] = "[REDACTED]"
+				continue
+			}
+			out[key] = redactTaskRefreshValue(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = redactTaskRefreshValue(item)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func TaskModel2Dto(task *model.Task) *dto.TaskDto {

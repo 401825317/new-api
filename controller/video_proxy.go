@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relay"
 	taskcommon "github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
@@ -57,6 +58,7 @@ func VideoProxy(c *gin.Context) {
 			fmt.Sprintf("Task is not completed yet, current status: %s", task.Status))
 		return
 	}
+	relay.RefreshExpiringVideoResultURL(task)
 
 	channel, err := model.CacheGetChannel(task.ChannelId)
 	if err != nil {
@@ -111,7 +113,10 @@ func VideoProxy(c *gin.Context) {
 				return
 			}
 		case constant.ChannelTypeOpenAI, constant.ChannelTypeSora:
-			if resultURL := strings.TrimSpace(task.GetResultURL()); resultURL != "" && !isTaskProxyContentURL(resultURL, task.TaskID) {
+			resultURL := strings.TrimSpace(task.GetResultURL())
+			if resultURL != "" &&
+				!taskcommon.SignedVideoProxyURLNeedsRefresh(resultURL, 0) &&
+				!isTaskProxyContentURL(resultURL, task.TaskID) {
 				videoURL = resultURL
 				if shouldAuthorizeUpstreamVideoURL(videoURL) {
 					setVideoProxyBearer(req, getVideoProxyChannelKey(channel, task))
