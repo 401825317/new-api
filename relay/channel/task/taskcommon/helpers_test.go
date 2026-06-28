@@ -59,6 +59,17 @@ func TestPublicResultURLDownstreamMode(t *testing.T) {
 	}
 }
 
+func TestPublicResultURLDownstreamModeReturnsExpiredSignedURL(t *testing.T) {
+	withVideoURLSettings(t, "https://zz-cn.lingzhiwuxian.com", "", "downstream")
+	exp := time.Now().Add(-time.Minute).Unix()
+	rawURL := "https://video.junfeiai.hk-proxy.lingzhiwuxian.com/video/grok/task_upstream?exp=" + strconv.FormatInt(exp, 10) + "&sig=old"
+
+	got := PublicResultURL(grokVideoTask(rawURL))
+	if got != rawURL {
+		t.Fatalf("PublicResultURL() = %q, want raw downstream signed URL %q", got, rawURL)
+	}
+}
+
 func TestPublicResultURLDownstreamModeBypassesSignedGrokProxy(t *testing.T) {
 	withVideoURLSettings(t, "https://zz-cn.lingzhiwuxian.com", "https://video.junfeiai.hk-proxy.lingzhiwuxian.com", "direct")
 	withVideoProxySignSecret(t, "secret")

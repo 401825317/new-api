@@ -114,10 +114,8 @@ func VideoProxy(c *gin.Context) {
 			}
 		case constant.ChannelTypeOpenAI, constant.ChannelTypeSora:
 			resultURL := strings.TrimSpace(task.GetResultURL())
-			if resultURL != "" &&
-				!taskcommon.SignedVideoProxyURLNeedsRefresh(resultURL, 0) &&
-				!isTaskProxyContentURL(resultURL, task.TaskID) {
-				videoURL = resultURL
+			if refreshedURL := usableRefreshedVideoResultURL(resultURL, task.TaskID); refreshedURL != "" {
+				videoURL = refreshedURL
 				if shouldAuthorizeUpstreamVideoURL(videoURL) {
 					setVideoProxyBearer(req, getVideoProxyChannelKey(channel, task))
 				}
@@ -193,6 +191,16 @@ func VideoProxy(c *gin.Context) {
 	if _, err = io.Copy(c.Writer, resp.Body); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to stream video content: %s", err.Error()))
 	}
+}
+
+func usableRefreshedVideoResultURL(resultURL, taskID string) string {
+	resultURL = strings.TrimSpace(resultURL)
+	if resultURL == "" ||
+		taskcommon.SignedVideoProxyURLNeedsRefresh(resultURL, 0) ||
+		isTaskProxyContentURL(resultURL, taskID) {
+		return ""
+	}
+	return resultURL
 }
 
 func GrokVideoProxy(c *gin.Context) {

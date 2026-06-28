@@ -2,6 +2,7 @@ package sora
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -39,27 +40,42 @@ type ImageURL struct {
 }
 
 type responseTask struct {
-	ID                 string `json:"id"`
-	TaskID             string `json:"task_id,omitempty"` //兼容旧接口
-	Object             string `json:"object"`
-	Model              string `json:"model"`
-	Status             string `json:"status"`
-	Progress           int    `json:"progress"`
-	CreatedAt          int64  `json:"created_at"`
-	CompletedAt        int64  `json:"completed_at,omitempty"`
-	ExpiresAt          int64  `json:"expires_at,omitempty"`
-	Seconds            string `json:"seconds,omitempty"`
-	Size               string `json:"size,omitempty"`
-	RemixedFromVideoID string `json:"remixed_from_video_id,omitempty"`
-	ResultURL          string `json:"result_url,omitempty"`
-	URL                string `json:"url,omitempty"`
+	ID                 string   `json:"id"`
+	TaskID             string   `json:"task_id,omitempty"` //兼容旧接口
+	Object             string   `json:"object"`
+	Model              string   `json:"model"`
+	Status             string   `json:"status"`
+	Progress           int      `json:"progress"`
+	CreatedAt          int64    `json:"created_at"`
+	CompletedAt        int64    `json:"completed_at,omitempty"`
+	ExpiresAt          int64    `json:"expires_at,omitempty"`
+	Seconds            string   `json:"seconds,omitempty"`
+	Size               string   `json:"size,omitempty"`
+	RemixedFromVideoID string   `json:"remixed_from_video_id,omitempty"`
+	ResultURL          string   `json:"result_url,omitempty"`
+	URL                string   `json:"url,omitempty"`
+	VideoURL           string   `json:"video_url,omitempty"`
+	Output             []string `json:"output,omitempty"`
 	Video              *struct {
 		URL string `json:"url,omitempty"`
 	} `json:"video,omitempty"`
-	Error *struct {
-		Message string `json:"message"`
-		Code    string `json:"code"`
-	} `json:"error,omitempty"`
+	Error *taskError `json:"error,omitempty"`
+}
+
+type taskError struct {
+	Message string `json:"message"`
+	Code    string `json:"code"`
+}
+
+func (e *taskError) UnmarshalJSON(data []byte) error {
+	var msg string
+	if err := json.Unmarshal(data, &msg); err == nil {
+		e.Message = msg
+		return nil
+	}
+
+	type alias taskError
+	return json.Unmarshal(data, (*alias)(e))
 }
 
 // ============================
@@ -327,6 +343,12 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 }
 
 func (r responseTask) resultURL() string {
+	if r.VideoURL != "" {
+		return r.VideoURL
+	}
+	if len(r.Output) > 0 && strings.TrimSpace(r.Output[0]) != "" {
+		return strings.TrimSpace(r.Output[0])
+	}
 	if r.ResultURL != "" {
 		return r.ResultURL
 	}

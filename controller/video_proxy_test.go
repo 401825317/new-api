@@ -3,7 +3,9 @@ package controller
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -77,6 +79,23 @@ func TestTryGrokVideoAccelRedirect(t *testing.T) {
 	}
 	if got, want := recorder.Code, http.StatusOK; got != want {
 		t.Fatalf("status = %d, want %d", got, want)
+	}
+}
+
+func TestUsableRefreshedVideoResultURLRejectsExpiredSignedURL(t *testing.T) {
+	expired := "https://video.junfeiai.hk-proxy.lingzhiwuxian.com/video/grok/task_upstream?exp=" +
+		strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10) + "&sig=old"
+
+	if got := usableRefreshedVideoResultURL(expired, "task_local"); got != "" {
+		t.Fatalf("usableRefreshedVideoResultURL() = %q, want empty", got)
+	}
+}
+
+func TestUsableRefreshedVideoResultURLAcceptsFreshRawURL(t *testing.T) {
+	rawURL := "https://vidgen.x.ai/xai-vidgen-bucket/video.mp4"
+
+	if got := usableRefreshedVideoResultURL(rawURL, "task_local"); got != rawURL {
+		t.Fatalf("usableRefreshedVideoResultURL() = %q, want %q", got, rawURL)
 	}
 }
 

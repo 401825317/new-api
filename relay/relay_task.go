@@ -547,8 +547,12 @@ func mapTaskStatusToSimple(status model.TaskStatus) string {
 }
 
 func publicTaskResultURL(task *model.Task) string {
+	wasExpiringSignedURL := false
+	if task != nil {
+		wasExpiringSignedURL = taskcommon.SignedVideoProxyURLNeedsRefresh(task.GetResultURL(), signedVideoProxyRefreshBefore)
+	}
 	refreshExpiringSignedVideoURL(task)
-	if task != nil && taskcommon.SignedVideoProxyURLNeedsRefresh(task.GetResultURL(), 0) {
+	if task != nil && (wasExpiringSignedURL || taskcommon.SignedVideoProxyURLNeedsRefresh(task.GetResultURL(), 0)) {
 		return taskcommon.BuildProxyURL(task.TaskID)
 	}
 	return taskcommon.PublicResultURL(task)
