@@ -15,12 +15,13 @@ func TestClawXRuntimePayloadDefaultsToSmartRouting(t *testing.T) {
 	payload := clawXRuntimePayload()
 
 	assert.Equal(t, "smart-latest", payload["defaultModel"])
+	assert.Equal(t, []string{"deepseek-latest"}, payload["fallbackModels"])
 
 	families, ok := payload["modelFamilies"].([]gin.H)
 	if !ok {
 		t.Fatalf("unexpected modelFamilies type: %T", payload["modelFamilies"])
 	}
-	if assert.NotEmpty(t, families) {
+	if assert.Len(t, families, 1) {
 		assert.Equal(t, "smart-latest", families[0]["id"])
 		assert.Equal(t, "智能路由", families[0]["name"])
 	}

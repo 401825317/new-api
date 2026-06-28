@@ -24,10 +24,12 @@ import (
 )
 
 const (
-	defaultClawXOrigin       = "https://zz-cn.lingzhiwuxian.com"
-	defaultClawXProviderKey  = "lingzhiwuxian"
-	defaultClawXProviderName = "零至无限"
-	defaultClawXModel        = "smart-latest"
+	defaultClawXOrigin        = "https://zz-cn.lingzhiwuxian.com"
+	defaultClawXProviderKey   = "lingzhiwuxian"
+	defaultClawXProviderName  = "零至无限"
+	defaultClawXModel         = "smart-latest"
+	defaultClawXFallbackModel = "deepseek-latest"
+	defaultClawXModelFamilies = "smart-latest:智能路由"
 
 	defaultClawXAuthAccessTTLSeconds  = 24 * 60 * 60
 	defaultClawXAuthRefreshTTLSeconds = 10 * 365 * 24 * 60 * 60
@@ -127,14 +129,7 @@ func clawXProviderBaseURL() string {
 func clawXModelFamilies() []gin.H {
 	raw := strings.TrimSpace(os.Getenv("CLAWX_MODEL_FAMILIES"))
 	if raw == "" {
-		return []gin.H{
-			{"id": "smart-latest", "name": "智能路由", "family": "smart"},
-			{"id": "qwen-latest", "name": "通义千问最新版", "family": "qwen"},
-			{"id": "deepseek-latest", "name": "DeepSeek 最新版", "family": "deepseek"},
-			{"id": "doubao-latest", "name": "豆包最新版", "family": "doubao"},
-			{"id": "kimi-latest", "name": "Kimi 最新版", "family": "kimi"},
-			{"id": "glm-latest", "name": "GLM 最新版", "family": "glm"},
-		}
+		raw = defaultClawXModelFamilies
 	}
 	result := make([]gin.H, 0)
 	for _, item := range strings.Split(raw, ",") {
@@ -155,7 +150,11 @@ func clawXModelFamilies() []gin.H {
 func clawXRuntimePayload() gin.H {
 	defaultModel := clawXEnv("CLAWX_DEFAULT_MODEL", defaultClawXModel)
 	fallbackModels := make([]string, 0)
-	for _, item := range strings.Split(os.Getenv("CLAWX_FALLBACK_MODELS"), ",") {
+	rawFallbackModels := strings.TrimSpace(os.Getenv("CLAWX_FALLBACK_MODELS"))
+	if rawFallbackModels == "" {
+		rawFallbackModels = defaultClawXFallbackModel
+	}
+	for _, item := range strings.Split(rawFallbackModels, ",") {
 		if modelName := strings.TrimSpace(item); modelName != "" {
 			fallbackModels = append(fallbackModels, modelName)
 		}
