@@ -2,11 +2,13 @@ package controller
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -226,6 +228,9 @@ func GrokVideoProxy(c *gin.Context) {
 		videoProxyError(c, http.StatusForbidden, "server_error", fmt.Sprintf("request blocked: %v", err))
 		return
 	}
+	if tryGrokVideoAccelRedirect(c, videoURL) {
+		return
+	}
 
 	proxy := ""
 	if channel, err := model.CacheGetChannel(task.ChannelId); err == nil && channel != nil {
@@ -278,6 +283,51 @@ func GrokVideoProxy(c *gin.Context) {
 	if _, err = io.Copy(c.Writer, resp.Body); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to stream grok video content: %s", err.Error()))
 	}
+}
+
+func tryGrokVideoAccelRedirect(c *gin.Context, videoURL string) bool {
+	if !grokVideoAccelRedirectEnabled() {
+		return false
+	}
+	if !grokVideoAccelRedirectHeaderValid(c.GetHeader("X-Video-Proxy-Accel")) {
+		return false
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(videoURL))
+	if err != nil || parsed.Host == "" || parsed.Scheme == "" {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return false
+	}
+
+	target := parsed.RequestURI()
+	if target == "" {
+		target = "/"
+	}
+	c.Header("X-Accel-Redirect", "/__grok_xai/"+host+target)
+	c.Header("X-Accel-Buffering", "no")
+	c.Header("Cache-Control", "public, max-age=3600")
+	c.Status(http.StatusOK)
+	return true
+}
+
+func grokVideoAccelRedirectEnabled() bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv("GROK_VIDEO_ACCEL_REDIRECT")))
+	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func grokVideoAccelRedirectHeaderValid(headerValue string) bool {
+	headerValue = strings.TrimSpace(headerValue)
+	token := strings.TrimSpace(os.Getenv("GROK_VIDEO_ACCEL_REDIRECT_TOKEN"))
+	if token != "" {
+		return subtle.ConstantTimeCompare([]byte(headerValue), []byte(token)) == 1
+	}
+	return headerValue == "1"
 }
 
 func shouldAuthorizeUpstreamVideoURL(videoURL string) bool {
