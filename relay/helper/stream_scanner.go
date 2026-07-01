@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,28 @@ const (
 	DefaultPingInterval         = 10 * time.Second
 )
 
+const (
+	debugTimingHeader       = "X-Debug-Timing"
+	newAPIDebugTimingHeader = "X-NewAPI-Debug-Timing"
+)
+
+type streamTimingDebug struct {
+	enabled bool
+	start   time.Time
+	ctx     *gin.Context
+	info    *relaycommon.RelayInfo
+
+	mu                     sync.Mutex
+	firstDataMs            int64
+	firstContentLikeDataMs int64
+	firstHandlerDoneMs     int64
+}
+
+type streamDataChunk struct {
+	data     string
+	received int
+}
+
 func getScannerBufferSize() int {
 	if constant.StreamScannerMaxBufferMB > 0 {
 		return constant.StreamScannerMaxBufferMB << 20
@@ -40,6 +63,202 @@ func NewStreamScanner(reader io.Reader) *bufio.Scanner {
 	return scanner
 }
 
+func newStreamTimingDebug(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) *streamTimingDebug {
+	debug := &streamTimingDebug{
+		ctx:  c,
+		info: info,
+	}
+	if c == nil || c.Request == nil || !streamTimingDebugEnabled(c.Request.Header) {
+		return debug
+	}
+	debug.enabled = true
+	debug.start = info.StartTime
+	if debug.start.IsZero() {
+		debug.start = time.Now()
+	}
+
+	logger.LogInfo(c, fmt.Sprintf(
+		"stream timing start channel_id=%d channel_type=%d model=%s upstream_model=%s path=%s upstream_status=%d upstream_content_type=%s upstream_request_id=%s cf_ray=%s",
+		streamTimingChannelID(info),
+		streamTimingChannelType(info),
+		safeTimingLogValue(info.OriginModelName),
+		safeTimingLogValue(streamTimingUpstreamModel(info)),
+		safeTimingLogValue(info.RequestURLPath),
+		streamTimingStatusCode(resp),
+		safeTimingLogValue(streamTimingHeaderValue(resp, "Content-Type")),
+		safeTimingLogValue(streamTimingHeaderValue(resp, common.UpstreamRequestIdKey)),
+		safeTimingLogValue(streamTimingHeaderValue(resp, "Cf-Ray")),
+	))
+
+	return debug
+}
+
+func streamTimingChannelID(info *relaycommon.RelayInfo) int {
+	if info == nil || info.ChannelMeta == nil {
+		return 0
+	}
+	return info.ChannelId
+}
+
+func streamTimingChannelType(info *relaycommon.RelayInfo) int {
+	if info == nil || info.ChannelMeta == nil {
+		return 0
+	}
+	return info.ChannelType
+}
+
+func streamTimingUpstreamModel(info *relaycommon.RelayInfo) string {
+	if info == nil || info.ChannelMeta == nil {
+		return ""
+	}
+	return info.UpstreamModelName
+}
+
+func streamTimingDebugEnabled(header http.Header) bool {
+	return isTruthyDebugTimingValue(header.Get(debugTimingHeader)) ||
+		isTruthyDebugTimingValue(header.Get(newAPIDebugTimingHeader))
+}
+
+func isTruthyDebugTimingValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func streamTimingStatusCode(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
+}
+
+func streamTimingHeaderValue(resp *http.Response, key string) string {
+	if resp == nil {
+		return ""
+	}
+	return resp.Header.Get(key)
+}
+
+func safeTimingLogValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	return strconv.Quote(value)
+}
+
+func (d *streamTimingDebug) elapsedMs() int64 {
+	return time.Since(d.start).Milliseconds()
+}
+
+func (d *streamTimingDebug) markFirstData(data string, received int) {
+	if d == nil || !d.enabled {
+		return
+	}
+
+	contentLike := isStreamTimingContentLikeData(data)
+	d.mu.Lock()
+	if d.firstDataMs == 0 {
+		d.firstDataMs = d.elapsedMs()
+		logger.LogInfo(d.ctx, fmt.Sprintf(
+			"stream timing first_data_ms=%d content_like=%t received=%d",
+			d.firstDataMs,
+			contentLike,
+			received,
+		))
+	}
+	if contentLike && d.firstContentLikeDataMs == 0 {
+		d.firstContentLikeDataMs = d.elapsedMs()
+		logger.LogInfo(d.ctx, fmt.Sprintf(
+			"stream timing first_content_like_data_ms=%d received=%d",
+			d.firstContentLikeDataMs,
+			received,
+		))
+	}
+	d.mu.Unlock()
+}
+
+func (d *streamTimingDebug) markFirstHandlerDone(received int) {
+	if d == nil || !d.enabled {
+		return
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.firstHandlerDoneMs != 0 {
+		return
+	}
+	d.firstHandlerDoneMs = d.elapsedMs()
+	logger.LogInfo(d.ctx, fmt.Sprintf(
+		"stream timing first_handler_done_ms=%d received=%d",
+		d.firstHandlerDoneMs,
+		received,
+	))
+}
+
+func (d *streamTimingDebug) finish() {
+	if d == nil || !d.enabled {
+		return
+	}
+
+	d.mu.Lock()
+	firstDataMs := d.firstDataMs
+	firstContentLikeDataMs := d.firstContentLikeDataMs
+	firstHandlerDoneMs := d.firstHandlerDoneMs
+	d.mu.Unlock()
+
+	endReason := relaycommon.StreamEndReasonNone
+	errorCount := 0
+	if d.info != nil && d.info.StreamStatus != nil {
+		endReason = d.info.StreamStatus.EndReason
+		errorCount = d.info.StreamStatus.TotalErrorCount()
+	}
+	received := 0
+	if d.info != nil {
+		received = d.info.ReceivedResponseCount
+	}
+
+	logger.LogInfo(d.ctx, fmt.Sprintf(
+		"stream timing done total_ms=%d first_data_ms=%d first_content_like_data_ms=%d first_handler_done_ms=%d received=%d end_reason=%s soft_errors=%d",
+		d.elapsedMs(),
+		firstDataMs,
+		firstContentLikeDataMs,
+		firstHandlerDoneMs,
+		received,
+		endReason,
+		errorCount,
+	))
+}
+
+func isStreamTimingContentLikeData(data string) bool {
+	data = strings.TrimSpace(data)
+	if data == "" || strings.HasPrefix(data, "[DONE]") {
+		return false
+	}
+
+	contentMarkers := []string{
+		`"content":`,
+		`"reasoning_content":`,
+		`"tool_calls":`,
+		`"function_call":`,
+		`"function_call_arguments":`,
+		`"response.output_text.delta"`,
+		`"response.reasoning_summary_text.delta"`,
+		`"response.function_call_arguments.delta"`,
+		`"content_block_delta"`,
+		`"text_delta"`,
+	}
+	for _, marker := range contentMarkers {
+		if strings.Contains(data, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) {
 
 	if resp == nil || dataHandler == nil {
@@ -48,6 +267,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	// 无条件新建 StreamStatus
 	info.StreamStatus = relaycommon.NewStreamStatus()
+	timingDebug := newStreamTimingDebug(c, resp, info)
+	defer timingDebug.finish()
 
 	// 确保响应体总是被关闭
 	defer func() {
@@ -180,7 +401,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		})
 	}
 
-	dataChan := make(chan string, 10)
+	dataChan := make(chan streamDataChunk, 10)
 
 	wg.Add(1)
 	gopool.Go(func() {
@@ -193,11 +414,12 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			common.SafeSendBool(stopChan, true)
 		}()
 		sr := newStreamResult(info.StreamStatus)
-		for data := range dataChan {
+		for chunk := range dataChan {
 			sr.reset()
 			writeMutex.Lock()
-			dataHandler(data, sr)
+			dataHandler(chunk.data, sr)
 			writeMutex.Unlock()
+			timingDebug.markFirstHandlerDone(chunk.received)
 			if sr.IsStopped() {
 				return
 			}
@@ -249,9 +471,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			if !strings.HasPrefix(data, "[DONE]") {
 				info.SetFirstResponseTime()
 				info.ReceivedResponseCount++
+				timingDebug.markFirstData(data, info.ReceivedResponseCount)
 
 				select {
-				case dataChan <- data:
+				case dataChan <- streamDataChunk{data: data, received: info.ReceivedResponseCount}:
 				case <-ctx.Done():
 					return
 				case <-stopChan:

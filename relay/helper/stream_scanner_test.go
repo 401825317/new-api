@@ -210,6 +210,60 @@ func TestStreamScannerHandler_DataWithExtraSpaces(t *testing.T) {
 	assert.Equal(t, "{\"trimmed\":true}", got)
 }
 
+func TestIsStreamTimingContentLikeData(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{
+			name: "openai content delta",
+			data: `{"choices":[{"delta":{"content":"hello"}}]}`,
+			want: true,
+		},
+		{
+			name: "openai reasoning content delta",
+			data: `{"choices":[{"delta":{"reasoning_content":"thinking"}}]}`,
+			want: true,
+		},
+		{
+			name: "responses output text event",
+			data: `{"type":"response.output_text.delta","delta":"hello"}`,
+			want: true,
+		},
+		{
+			name: "anthropic text delta",
+			data: `{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}`,
+			want: true,
+		},
+		{
+			name: "metadata-only chunk",
+			data: `{"id":"chatcmpl_x","choices":[{"delta":{},"index":0}]}`,
+			want: false,
+		},
+		{
+			name: "content filter metadata",
+			data: `{"choices":[{"content_filter_results":{"hate":{"filtered":false}}}]}`,
+			want: false,
+		},
+		{
+			name: "done marker",
+			data: `[DONE]`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isStreamTimingContentLikeData(tt.data))
+		})
+	}
+}
+
 // ---------- Ping tests ----------
 
 func TestStreamScannerHandler_PingSentDuringSlowUpstream(t *testing.T) {
