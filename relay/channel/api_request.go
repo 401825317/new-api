@@ -484,6 +484,49 @@ func sendPingData(c *gin.Context, mutex *sync.Mutex) error {
 func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	return doRequest(c, req, info)
 }
+
+func upstreamTimingElapsedMs(info *common.RelayInfo) int64 {
+	start := time.Now()
+	if info != nil && !info.StartTime.IsZero() {
+		start = info.StartTime
+	}
+	return time.Since(start).Milliseconds()
+}
+
+func upstreamTimingPath(req *http.Request) string {
+	if req == nil || req.URL == nil {
+		return "-"
+	}
+	path := strings.TrimSpace(req.URL.EscapedPath())
+	if path == "" {
+		return "-"
+	}
+	return path
+}
+
+func logUpstreamTiming(c *gin.Context, info *common.RelayInfo, req *http.Request, stage string, resp *http.Response, err error) {
+	if c == nil || c.Request == nil || !helper.DebugTimingEnabled(c.Request.Header) {
+		return
+	}
+	status := 0
+	contentType := "-"
+	if resp != nil {
+		status = resp.StatusCode
+		if v := strings.TrimSpace(resp.Header.Get("Content-Type")); v != "" {
+			contentType = fmt.Sprintf("%q", v)
+		}
+	}
+	logger.LogInfo(c, fmt.Sprintf("stream timing upstream_%s_ms=%d method=%s upstream_path=%s status=%d upstream_content_type=%s error=%t",
+		stage,
+		upstreamTimingElapsedMs(info),
+		req.Method,
+		upstreamTimingPath(req),
+		status,
+		contentType,
+		err != nil,
+	))
+}
+
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	var client *http.Client
 	var err error
@@ -514,14 +557,17 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		}
 	}
 
+	logUpstreamTiming(c, info, req, "request_start", nil, nil)
 	resp, err := client.Do(req)
 	if err != nil {
+		logUpstreamTiming(c, info, req, "request_error", nil, err)
 		logger.LogError(c, "do request failed: "+err.Error())
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {
 		return nil, errors.New("resp is nil")
 	}
+	logUpstreamTiming(c, info, req, "headers", resp, nil)
 
 	if upID := resp.Header.Get(common2.RequestIdKey); upID != "" {
 		c.Set(common2.UpstreamRequestIdKey, upID)

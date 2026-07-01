@@ -119,6 +119,10 @@ func streamTimingDebugEnabled(header http.Header) bool {
 		isTruthyDebugTimingValue(header.Get(newAPIDebugTimingHeader))
 }
 
+func DebugTimingEnabled(header http.Header) bool {
+	return streamTimingDebugEnabled(header)
+}
+
 func isTruthyDebugTimingValue(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "yes", "on":
