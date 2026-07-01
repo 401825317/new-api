@@ -86,16 +86,17 @@ type TokenCountMeta struct {
 }
 
 type RelayInfo struct {
-	TokenId           int
-	TokenKey          string
-	TokenGroup        string
-	UserId            int
-	UsingGroup        string // 使用的分组，当auto跨分组重试时，会变动
-	UserGroup         string // 用户所在分组
-	TokenUnlimited    bool
-	StartTime         time.Time
-	FirstResponseTime time.Time
-	isFirstResponse   bool
+	TokenId                  int
+	TokenKey                 string
+	TokenGroup               string
+	UserId                   int
+	UsingGroup               string // 使用的分组，当auto跨分组重试时，会变动
+	UserGroup                string // 用户所在分组
+	TokenUnlimited           bool
+	StartTime                time.Time
+	UpstreamRequestStartTime time.Time
+	FirstResponseTime        time.Time
+	isFirstResponse          bool
 	//SendLastReasoningResponse bool
 	IsStream               bool
 	IsGeminiBatchEmbedding bool
@@ -267,9 +268,12 @@ func (info *RelayInfo) ToString() string {
 	fmt.Fprintf(b, "Token{ Id: %d, Unlimited: %t, Key: ***masked*** }, ", info.TokenId, info.TokenUnlimited)
 
 	// Time info
-	latencyMs := info.FirstResponseTime.Sub(info.StartTime).Milliseconds()
-	fmt.Fprintf(b, "Timing{ Start: %s, FirstResponse: %s, LatencyMs: %d }, ",
-		info.StartTime.Format(time.RFC3339Nano), info.FirstResponseTime.Format(time.RFC3339Nano), latencyMs)
+	latencyMs := info.EndToEndFirstResponseLatencyMs()
+	upstreamLatencyMs := info.UpstreamFirstResponseLatencyMs()
+	preUpstreamMs := info.PreUpstreamLatencyMs()
+	fmt.Fprintf(b, "Timing{ Start: %s, UpstreamStart: %s, FirstResponse: %s, LatencyMs: %d, UpstreamLatencyMs: %d, PreUpstreamMs: %d }, ",
+		info.StartTime.Format(time.RFC3339Nano), info.UpstreamRequestStartTime.Format(time.RFC3339Nano),
+		info.FirstResponseTime.Format(time.RFC3339Nano), latencyMs, upstreamLatencyMs, preUpstreamMs)
 
 	// Audio / realtime
 	if info.InputAudioFormat != "" || info.OutputAudioFormat != "" || len(info.RealtimeTools) > 0 || info.AudioUsage {
@@ -663,7 +667,52 @@ func (info *RelayInfo) SetFirstResponseTime() {
 	}
 }
 
+func (info *RelayInfo) SetUpstreamRequestStartTime() {
+	if info == nil || info.HasSendResponse() {
+		return
+	}
+	info.UpstreamRequestStartTime = time.Now()
+}
+
+func (info *RelayInfo) EndToEndFirstResponseLatencyMs() int64 {
+	if info == nil || !info.HasSendResponse() || info.StartTime.IsZero() {
+		return 0
+	}
+	return nonNegativeMilliseconds(info.FirstResponseTime.Sub(info.StartTime))
+}
+
+func (info *RelayInfo) UpstreamFirstResponseLatencyMs() int64 {
+	if info == nil || !info.HasSendResponse() {
+		return 0
+	}
+	if info.UpstreamRequestStartTime.IsZero() {
+		return info.EndToEndFirstResponseLatencyMs()
+	}
+	return nonNegativeMilliseconds(info.FirstResponseTime.Sub(info.UpstreamRequestStartTime))
+}
+
+func (info *RelayInfo) PreUpstreamLatencyMs() int64 {
+	if info == nil || info.StartTime.IsZero() || info.UpstreamRequestStartTime.IsZero() {
+		return 0
+	}
+	return nonNegativeMilliseconds(info.UpstreamRequestStartTime.Sub(info.StartTime))
+}
+
+func nonNegativeMilliseconds(d time.Duration) int64 {
+	ms := d.Milliseconds()
+	if ms < 0 {
+		return 0
+	}
+	return ms
+}
+
 func (info *RelayInfo) HasSendResponse() bool {
+	if info == nil || info.FirstResponseTime.IsZero() {
+		return false
+	}
+	if info.StartTime.IsZero() {
+		return true
+	}
 	return info.FirstResponseTime.After(info.StartTime)
 }
 

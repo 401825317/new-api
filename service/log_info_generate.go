@@ -43,7 +43,13 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	other["cache_ratio"] = cacheRatio
 	other["model_price"] = modelPrice
 	other["user_group_ratio"] = userGroupRatio
-	other["frt"] = float64(relayInfo.FirstResponseTime.UnixMilli() - relayInfo.StartTime.UnixMilli())
+	other["frt"] = float64(relayInfo.UpstreamFirstResponseLatencyMs())
+	if endToEndFRT := relayInfo.EndToEndFirstResponseLatencyMs(); endToEndFRT > 0 {
+		other["end_to_end_frt"] = float64(endToEndFRT)
+	}
+	if preUpstreamMs := relayInfo.PreUpstreamLatencyMs(); preUpstreamMs > 0 {
+		other["pre_upstream_ms"] = float64(preUpstreamMs)
+	}
 	if relayInfo.ReasoningEffort != "" {
 		other["reasoning_effort"] = relayInfo.ReasoningEffort
 	}

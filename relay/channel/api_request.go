@@ -557,6 +557,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		}
 	}
 
+	info.SetUpstreamRequestStartTime()
 	logUpstreamTiming(c, info, req, "request_start", nil, nil)
 	resp, err := client.Do(req)
 	if err != nil {
