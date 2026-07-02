@@ -80,38 +80,92 @@ var channelAffinitySetting = ChannelAffinitySetting{
 	KeepOnChannelDisabled: false,
 	MaxEntries:            100_000,
 	DefaultTTLSeconds:     3600,
-	Rules: []ChannelAffinityRule{
-		{
-			Name:       "codex cli trace",
-			ModelRegex: []string{"^gpt-.*$"},
-			PathRegex:  []string{"/v1/responses"},
-			KeySources: []ChannelAffinityKeySource{
-				{Type: "gjson", Path: "prompt_cache_key"},
-			},
-			ValueRegex:            "",
-			TTLSeconds:            0,
-			ParamOverrideTemplate: buildPassHeaderTemplate(codexCliPassThroughHeaders),
-			SkipRetryOnFailure:    true,
-			IncludeUsingGroup:     true,
-			IncludeRuleName:       true,
-			UserAgentInclude:      nil,
+	Rules:                 defaultChannelAffinityRules(),
+}
+
+func defaultChannelAffinityRules() []ChannelAffinityRule {
+	return []ChannelAffinityRule{
+		defaultCodexCliTraceRule(),
+		defaultOpenAIChatPromptCacheRule(),
+		defaultClaudeCliTraceRule(),
+	}
+}
+
+func defaultCodexCliTraceRule() ChannelAffinityRule {
+	return ChannelAffinityRule{
+		Name:       "codex cli trace",
+		ModelRegex: []string{"^gpt-.*$"},
+		PathRegex:  []string{"/v1/responses"},
+		KeySources: []ChannelAffinityKeySource{
+			{Type: "gjson", Path: "prompt_cache_key"},
 		},
-		{
-			Name:       "claude cli trace",
-			ModelRegex: []string{"^claude-.*$"},
-			PathRegex:  []string{"/v1/messages"},
-			KeySources: []ChannelAffinityKeySource{
-				{Type: "gjson", Path: "metadata.user_id"},
-			},
-			ValueRegex:            "",
-			TTLSeconds:            0,
-			ParamOverrideTemplate: buildPassHeaderTemplate(claudeCliPassThroughHeaders),
-			SkipRetryOnFailure:    true,
-			IncludeUsingGroup:     true,
-			IncludeRuleName:       true,
-			UserAgentInclude:      nil,
+		ValueRegex:            "",
+		TTLSeconds:            0,
+		ParamOverrideTemplate: buildPassHeaderTemplate(codexCliPassThroughHeaders),
+		SkipRetryOnFailure:    true,
+		IncludeUsingGroup:     true,
+		IncludeRuleName:       true,
+		UserAgentInclude:      nil,
+	}
+}
+
+func defaultOpenAIChatPromptCacheRule() ChannelAffinityRule {
+	return ChannelAffinityRule{
+		Name: "openai chat prompt cache",
+		ModelRegex: []string{
+			"^gpt-.*$",
+			"^smart-.*$",
+			"^qwen-.*$",
+			"^deepseek-.*$",
+			"^doubao-.*$",
+			"^kimi-.*$",
+			"^glm-.*$",
 		},
-	},
+		PathRegex: []string{"/v1/chat/completions"},
+		KeySources: []ChannelAffinityKeySource{
+			{Type: "gjson", Path: "prompt_cache_key"},
+		},
+		ValueRegex:            "",
+		TTLSeconds:            0,
+		ParamOverrideTemplate: buildPassHeaderTemplate(codexCliPassThroughHeaders),
+		SkipRetryOnFailure:    true,
+		IncludeUsingGroup:     true,
+		IncludeRuleName:       true,
+		UserAgentInclude:      nil,
+	}
+}
+
+func defaultClaudeCliTraceRule() ChannelAffinityRule {
+	return ChannelAffinityRule{
+		Name:       "claude cli trace",
+		ModelRegex: []string{"^claude-.*$"},
+		PathRegex:  []string{"/v1/messages"},
+		KeySources: []ChannelAffinityKeySource{
+			{Type: "gjson", Path: "metadata.user_id"},
+		},
+		ValueRegex:            "",
+		TTLSeconds:            0,
+		ParamOverrideTemplate: buildPassHeaderTemplate(claudeCliPassThroughHeaders),
+		SkipRetryOnFailure:    true,
+		IncludeUsingGroup:     true,
+		IncludeRuleName:       true,
+		UserAgentInclude:      nil,
+	}
+}
+
+func ensureDefaultChannelAffinityRules(setting *ChannelAffinitySetting) {
+	if setting == nil {
+		return
+	}
+	existingByName := make(map[string]bool, len(setting.Rules))
+	for _, rule := range setting.Rules {
+		existingByName[rule.Name] = true
+	}
+	for _, rule := range defaultChannelAffinityRules() {
+		if !existingByName[rule.Name] {
+			setting.Rules = append(setting.Rules, rule)
+		}
+	}
 }
 
 func init() {
@@ -119,5 +173,6 @@ func init() {
 }
 
 func GetChannelAffinitySetting() *ChannelAffinitySetting {
+	ensureDefaultChannelAffinityRules(&channelAffinitySetting)
 	return &channelAffinitySetting
 }
