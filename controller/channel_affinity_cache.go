@@ -135,3 +135,15 @@ func parsePositiveIntQuery(raw string) int {
 	}
 	return v
 }
+
+func parsePositiveInt64Query(raw string) int64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return v
+}

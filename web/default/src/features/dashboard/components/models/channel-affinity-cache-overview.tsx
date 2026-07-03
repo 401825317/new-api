@@ -21,12 +21,15 @@ import { useQuery } from '@tanstack/react-query'
 import { Gauge, Hash, Network, Route } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { formatCompactNumber } from '@/lib/format'
+import { computeTimeRange } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { Skeleton } from '@/components/ui/skeleton'
-import { getChannelAffinityUsageCacheSummary } from '@/features/dashboard/api'
+import { getPromptCacheUsageSummary } from '@/features/dashboard/api'
+import { getDefaultDays } from '@/features/dashboard/lib'
 import type {
-  ChannelAffinityUsageCacheAggregate,
-  ChannelAffinityUsageCacheSummary,
+  DashboardFilters,
+  PromptCacheUsageAggregate,
+  PromptCacheUsageSummary,
 } from '@/features/dashboard/types'
 
 const TOP_MODEL_LIMIT = 6
@@ -44,23 +47,52 @@ function getRateTextClass(value: number | null | undefined): string {
   return 'text-muted-foreground'
 }
 
-function tokenCacheRate(summary?: ChannelAffinityUsageCacheSummary): string {
+function tokenCacheRate(summary?: PromptCacheUsageSummary): string {
   if (!summary?.token_cache_rate_available) return '-'
   return formatRate(summary.token_cache_rate)
 }
 
-function requestHitValue(summary: ChannelAffinityUsageCacheSummary): string {
-  return `${formatCompactNumber(summary.hit)}/${formatCompactNumber(summary.total)}`
+function requestHitValue(summary: PromptCacheUsageSummary): string {
+  return `${formatCompactNumber(summary.hit_requests)}/${formatCompactNumber(summary.total_requests)}`
 }
 
-export function ChannelAffinityCacheOverview() {
+interface ChannelAffinityCacheOverviewProps {
+  filters?: DashboardFilters
+}
+
+export function ChannelAffinityCacheOverview(
+  props: ChannelAffinityCacheOverviewProps
+) {
   const { t } = useTranslation()
+  const filters = props.filters
+  const timeRange = useMemo(
+    () =>
+      computeTimeRange(
+        getDefaultDays(filters?.time_granularity),
+        filters?.start_timestamp,
+        filters?.end_timestamp
+      ),
+    [
+      filters?.end_timestamp,
+      filters?.start_timestamp,
+      filters?.time_granularity,
+    ]
+  )
+
   const statsQuery = useQuery({
-    queryKey: ['dashboard', 'channel-affinity-cache-summary'],
+    queryKey: [
+      'dashboard',
+      'prompt-cache-usage-summary',
+      timeRange.start_timestamp,
+      timeRange.end_timestamp,
+      filters?.username,
+    ],
     queryFn: () =>
-      getChannelAffinityUsageCacheSummary({
+      getPromptCacheUsageSummary({
+        startTimestamp: timeRange.start_timestamp,
+        endTimestamp: timeRange.end_timestamp,
+        username: filters?.username,
         limit: 12,
-        topKeyLimit: 5,
       }),
     staleTime: 30 * 1000,
     retry: false,
@@ -75,7 +107,7 @@ export function ChannelAffinityCacheOverview() {
     () => (summary?.by_channel ?? []).slice(0, TOP_CHANNEL_LIMIT),
     [summary?.by_channel]
   )
-  const hasData = !!summary && summary.total > 0
+  const hasData = !!summary && summary.total_requests > 0
 
   if (statsQuery.isLoading) {
     return <ChannelAffinityCacheSkeleton />
@@ -122,8 +154,8 @@ export function ChannelAffinityCacheOverview() {
           />
           <InlineMetric
             icon={Hash}
-            label={t('Keys')}
-            value={hasData ? formatCompactNumber(summary.total_keys) : '0'}
+            label={t('Cache Read')}
+            value={hasData ? formatCompactNumber(summary.cached_tokens) : '0'}
           />
         </div>
 
@@ -213,9 +245,9 @@ function InlineMetric(props: {
 }
 
 function BadgeGroup(props: {
-  items: ChannelAffinityUsageCacheAggregate[]
+  items: PromptCacheUsageAggregate[]
   prefix: string
-  getLabel: (item: ChannelAffinityUsageCacheAggregate) => string
+  getLabel: (item: PromptCacheUsageAggregate) => string
 }) {
   return (
     <div className='flex flex-wrap items-center gap-1.5'>

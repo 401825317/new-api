@@ -72,6 +72,45 @@ export interface DashboardChartPreferences {
 }
 
 // ============================================================================
+// Prompt Cache Usage Stats
+// ============================================================================
+
+export interface PromptCacheUsageAggregate {
+  model: string
+  channel_id: number
+  total_requests: number
+  hit_requests: number
+  request_hit_rate: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cached_tokens: number
+  token_cache_rate: number
+  token_cache_rate_available: boolean
+  last_seen_at: number
+}
+
+export interface PromptCacheUsageSummary {
+  window_seconds: number
+  total_requests: number
+  hit_requests: number
+  request_hit_rate: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cached_tokens: number
+  token_cache_rate: number
+  token_cache_rate_available: boolean
+  last_seen_at: number
+  generated_at: number
+  scanned_rows: number
+  total_available_rows: number
+  truncated: boolean
+  by_model: PromptCacheUsageAggregate[]
+  by_channel: PromptCacheUsageAggregate[]
+}
+
+// ============================================================================
 // Channel Affinity Cache Stats
 // ============================================================================
 

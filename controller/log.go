@@ -150,6 +150,30 @@ func GetLogsSelfStat(c *gin.Context) {
 	return
 }
 
+func GetPromptCacheUsageSummary(c *gin.Context) {
+	filter := model.PromptCacheUsageSummaryFilter{
+		StartTimestamp: parsePositiveInt64Query(c.Query("start_timestamp")),
+		EndTimestamp:   parsePositiveInt64Query(c.Query("end_timestamp")),
+		Username:       c.Query("username"),
+		ModelName:      c.Query("model"),
+		ChannelID:      parsePositiveIntQuery(c.Query("channel_id")),
+		Group:          c.Query("group"),
+		Limit:          parsePositiveIntQuery(c.Query("limit")),
+		MaxRows:        parsePositiveIntQuery(c.Query("max_rows")),
+	}
+	stats, err := model.GetPromptCacheUsageSummary(filter)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    stats,
+	})
+	return
+}
+
 func DeleteHistoryLogs(c *gin.Context) {
 	targetTimestamp, _ := strconv.ParseInt(c.Query("target_timestamp"), 10, 64)
 	if targetTimestamp == 0 {

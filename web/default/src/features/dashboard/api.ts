@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { api } from '@/lib/api'
 import type {
   ChannelAffinityUsageCacheSummary,
+  PromptCacheUsageSummary,
   QuotaDataItem,
   UptimeGroupResult,
 } from './types'
@@ -77,6 +78,34 @@ export async function getChannelAffinityUsageCacheSummary(params?: {
     params: {
       limit: params?.limit,
       top_key_limit: params?.topKeyLimit,
+    },
+    disableDuplicate: true,
+  } as Record<string, unknown>)
+  return res.data
+}
+
+export async function getPromptCacheUsageSummary(params?: {
+  startTimestamp?: number
+  endTimestamp?: number
+  username?: string
+  model?: string
+  channelId?: number
+  group?: string
+  limit?: number
+}) {
+  const res = await api.get<{
+    success: boolean
+    message?: string
+    data?: PromptCacheUsageSummary
+  }>('/api/log/prompt_cache/summary', {
+    params: {
+      start_timestamp: params?.startTimestamp,
+      end_timestamp: params?.endTimestamp,
+      username: params?.username,
+      model: params?.model,
+      channel_id: params?.channelId,
+      group: params?.group,
+      limit: params?.limit,
     },
     disableDuplicate: true,
   } as Record<string, unknown>)

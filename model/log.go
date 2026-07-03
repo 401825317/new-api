@@ -2,8 +2,11 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -523,6 +526,309 @@ type Stat struct {
 	Quota int `json:"quota"`
 	Rpm   int `json:"rpm"`
 	Tpm   int `json:"tpm"`
+}
+
+type PromptCacheUsageAggregate struct {
+	ModelName               string  `json:"model"`
+	ChannelID               int     `json:"channel_id"`
+	TotalRequests           int64   `json:"total_requests"`
+	HitRequests             int64   `json:"hit_requests"`
+	RequestHitRate          float64 `json:"request_hit_rate"`
+	PromptTokens            int64   `json:"prompt_tokens"`
+	CompletionTokens        int64   `json:"completion_tokens"`
+	TotalTokens             int64   `json:"total_tokens"`
+	CachedTokens            int64   `json:"cached_tokens"`
+	TokenCacheRate          float64 `json:"token_cache_rate"`
+	TokenCacheRateAvailable bool    `json:"token_cache_rate_available"`
+	LastSeenAt              int64   `json:"last_seen_at"`
+}
+
+type PromptCacheUsageSummary struct {
+	WindowSeconds           int64                       `json:"window_seconds"`
+	TotalRequests           int64                       `json:"total_requests"`
+	HitRequests             int64                       `json:"hit_requests"`
+	RequestHitRate          float64                     `json:"request_hit_rate"`
+	PromptTokens            int64                       `json:"prompt_tokens"`
+	CompletionTokens        int64                       `json:"completion_tokens"`
+	TotalTokens             int64                       `json:"total_tokens"`
+	CachedTokens            int64                       `json:"cached_tokens"`
+	TokenCacheRate          float64                     `json:"token_cache_rate"`
+	TokenCacheRateAvailable bool                        `json:"token_cache_rate_available"`
+	LastSeenAt              int64                       `json:"last_seen_at"`
+	GeneratedAt             int64                       `json:"generated_at"`
+	ScannedRows             int64                       `json:"scanned_rows"`
+	TotalAvailableRows      int64                       `json:"total_available_rows"`
+	Truncated               bool                        `json:"truncated"`
+	ByModel                 []PromptCacheUsageAggregate `json:"by_model"`
+	ByChannel               []PromptCacheUsageAggregate `json:"by_channel"`
+}
+
+type PromptCacheUsageSummaryFilter struct {
+	StartTimestamp int64
+	EndTimestamp   int64
+	Username       string
+	ModelName      string
+	ChannelID      int
+	Group          string
+	Limit          int
+	MaxRows        int
+}
+
+type promptCacheUsageLogRow struct {
+	Id               int
+	CreatedAt        int64
+	Username         string
+	ModelName        string
+	ChannelId        int
+	PromptTokens     int
+	CompletionTokens int
+	Other            string
+}
+
+const (
+	defaultPromptCacheSummaryWindowSeconds = 24 * 60 * 60
+	defaultPromptCacheSummaryLimit         = 12
+	defaultPromptCacheSummaryMaxRows       = 50000
+	maxPromptCacheSummaryLimit             = 100
+	maxPromptCacheSummaryRows              = 200000
+)
+
+func GetPromptCacheUsageSummary(filter PromptCacheUsageSummaryFilter) (PromptCacheUsageSummary, error) {
+	normalizePromptCacheUsageSummaryFilter(&filter)
+
+	summary := PromptCacheUsageSummary{
+		WindowSeconds: filter.EndTimestamp - filter.StartTimestamp,
+		GeneratedAt:   time.Now().Unix(),
+		ByModel:       []PromptCacheUsageAggregate{},
+		ByChannel:     []PromptCacheUsageAggregate{},
+	}
+
+	tx := LOG_DB.Model(&Log{}).Where("type = ?", LogTypeConsume)
+	if filter.StartTimestamp > 0 {
+		tx = tx.Where("created_at >= ?", filter.StartTimestamp)
+	}
+	if filter.EndTimestamp > 0 {
+		tx = tx.Where("created_at <= ?", filter.EndTimestamp)
+	}
+	var err error
+	if tx, err = applyExplicitLogTextFilter(tx, "username", filter.Username); err != nil {
+		return summary, err
+	}
+	if tx, err = applyExplicitLogTextFilter(tx, "model_name", filter.ModelName); err != nil {
+		return summary, err
+	}
+	if filter.ChannelID > 0 {
+		tx = tx.Where("channel_id = ?", filter.ChannelID)
+	}
+	if filter.Group != "" {
+		tx = tx.Where(logGroupCol+" = ?", filter.Group)
+	}
+
+	var totalAvailable int64
+	if err := tx.Session(&gorm.Session{}).Count(&totalAvailable).Error; err != nil {
+		common.SysError("failed to count prompt cache usage summary logs: " + err.Error())
+		return summary, errors.New("查询 Prompt 缓存统计失败")
+	}
+	summary.TotalAvailableRows = totalAvailable
+	summary.Truncated = totalAvailable > int64(filter.MaxRows)
+
+	var rows []promptCacheUsageLogRow
+	if err := tx.Session(&gorm.Session{}).
+		Select("id, created_at, username, model_name, channel_id, prompt_tokens, completion_tokens, other").
+		Order("created_at desc, id desc").
+		Limit(filter.MaxRows).
+		Find(&rows).Error; err != nil {
+		common.SysError("failed to query prompt cache usage summary logs: " + err.Error())
+		return summary, errors.New("查询 Prompt 缓存统计失败")
+	}
+	summary.ScannedRows = int64(len(rows))
+
+	byModel := map[string]PromptCacheUsageAggregate{}
+	byChannel := map[string]PromptCacheUsageAggregate{}
+	for _, row := range rows {
+		other, _ := common.StrToMap(row.Other)
+		cachedTokens := promptCacheUsageInt64(other["cache_tokens"])
+		if row.PromptTokens <= 0 && cachedTokens <= 0 {
+			continue
+		}
+
+		addPromptCacheUsageRow(&summary, row, cachedTokens)
+
+		modelName := strings.TrimSpace(row.ModelName)
+		if modelName != "" {
+			agg := byModel[modelName]
+			if agg.ModelName == "" {
+				agg.ModelName = modelName
+			}
+			addPromptCacheUsageAggregateRow(&agg, row, cachedTokens)
+			byModel[modelName] = agg
+		}
+
+		if row.ChannelId > 0 {
+			channelKey := strconv.Itoa(row.ChannelId)
+			agg := byChannel[channelKey]
+			if agg.ChannelID == 0 {
+				agg.ChannelID = row.ChannelId
+			}
+			addPromptCacheUsageAggregateRow(&agg, row, cachedTokens)
+			byChannel[channelKey] = agg
+		}
+	}
+
+	finalizePromptCacheUsageSummary(&summary)
+	summary.ByModel = finalizePromptCacheUsageAggregateMap(byModel, filter.Limit)
+	summary.ByChannel = finalizePromptCacheUsageAggregateMap(byChannel, filter.Limit)
+
+	return summary, nil
+}
+
+func normalizePromptCacheUsageSummaryFilter(filter *PromptCacheUsageSummaryFilter) {
+	if filter == nil {
+		return
+	}
+	filter.Username = strings.TrimSpace(filter.Username)
+	filter.ModelName = strings.TrimSpace(filter.ModelName)
+	filter.Group = strings.TrimSpace(filter.Group)
+	if filter.EndTimestamp <= 0 {
+		filter.EndTimestamp = time.Now().Unix()
+	}
+	if filter.StartTimestamp <= 0 {
+		filter.StartTimestamp = filter.EndTimestamp - defaultPromptCacheSummaryWindowSeconds
+	}
+	if filter.EndTimestamp < filter.StartTimestamp {
+		filter.StartTimestamp, filter.EndTimestamp = filter.EndTimestamp, filter.StartTimestamp
+	}
+	if filter.EndTimestamp == filter.StartTimestamp {
+		filter.EndTimestamp = filter.StartTimestamp + 1
+	}
+	if filter.Limit <= 0 {
+		filter.Limit = defaultPromptCacheSummaryLimit
+	}
+	if filter.Limit > maxPromptCacheSummaryLimit {
+		filter.Limit = maxPromptCacheSummaryLimit
+	}
+	if filter.MaxRows <= 0 {
+		filter.MaxRows = defaultPromptCacheSummaryMaxRows
+	}
+	if filter.MaxRows > maxPromptCacheSummaryRows {
+		filter.MaxRows = maxPromptCacheSummaryRows
+	}
+}
+
+func addPromptCacheUsageRow(summary *PromptCacheUsageSummary, row promptCacheUsageLogRow, cachedTokens int64) {
+	if summary == nil {
+		return
+	}
+	summary.TotalRequests++
+	if cachedTokens > 0 {
+		summary.HitRequests++
+	}
+	summary.PromptTokens += int64(row.PromptTokens)
+	summary.CompletionTokens += int64(row.CompletionTokens)
+	summary.TotalTokens += int64(row.PromptTokens + row.CompletionTokens)
+	summary.CachedTokens += cachedTokens
+	if row.CreatedAt > summary.LastSeenAt {
+		summary.LastSeenAt = row.CreatedAt
+	}
+}
+
+func addPromptCacheUsageAggregateRow(agg *PromptCacheUsageAggregate, row promptCacheUsageLogRow, cachedTokens int64) {
+	if agg == nil {
+		return
+	}
+	agg.TotalRequests++
+	if cachedTokens > 0 {
+		agg.HitRequests++
+	}
+	agg.PromptTokens += int64(row.PromptTokens)
+	agg.CompletionTokens += int64(row.CompletionTokens)
+	agg.TotalTokens += int64(row.PromptTokens + row.CompletionTokens)
+	agg.CachedTokens += cachedTokens
+	if row.CreatedAt > agg.LastSeenAt {
+		agg.LastSeenAt = row.CreatedAt
+	}
+}
+
+func finalizePromptCacheUsageSummary(summary *PromptCacheUsageSummary) {
+	if summary == nil {
+		return
+	}
+	summary.RequestHitRate = promptCacheUsageRequestHitRate(summary.HitRequests, summary.TotalRequests)
+	summary.TokenCacheRate, summary.TokenCacheRateAvailable = promptCacheUsageTokenCacheRate(summary.PromptTokens, summary.CachedTokens)
+}
+
+func finalizePromptCacheUsageAggregateMap(items map[string]PromptCacheUsageAggregate, limit int) []PromptCacheUsageAggregate {
+	out := make([]PromptCacheUsageAggregate, 0, len(items))
+	for _, agg := range items {
+		agg.RequestHitRate = promptCacheUsageRequestHitRate(agg.HitRequests, agg.TotalRequests)
+		agg.TokenCacheRate, agg.TokenCacheRateAvailable = promptCacheUsageTokenCacheRate(agg.PromptTokens, agg.CachedTokens)
+		out = append(out, agg)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].TotalRequests != out[j].TotalRequests {
+			return out[i].TotalRequests > out[j].TotalRequests
+		}
+		if out[i].CachedTokens != out[j].CachedTokens {
+			return out[i].CachedTokens > out[j].CachedTokens
+		}
+		return out[i].LastSeenAt > out[j].LastSeenAt
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func promptCacheUsageRequestHitRate(hitRequests, totalRequests int64) float64 {
+	if totalRequests <= 0 {
+		return 0
+	}
+	return float64(hitRequests) / float64(totalRequests)
+}
+
+func promptCacheUsageTokenCacheRate(promptTokens, cachedTokens int64) (float64, bool) {
+	if promptTokens <= 0 {
+		return 0, false
+	}
+	return float64(cachedTokens) / float64(promptTokens), true
+}
+
+func promptCacheUsageInt64(value interface{}) int64 {
+	switch v := value.(type) {
+	case int:
+		return positiveInt64(int64(v))
+	case int64:
+		return positiveInt64(v)
+	case float64:
+		return positiveInt64(int64(v))
+	case float32:
+		return positiveInt64(int64(v))
+	case json.Number:
+		parsed, err := v.Int64()
+		if err != nil {
+			floatValue, floatErr := strconv.ParseFloat(v.String(), 64)
+			if floatErr != nil {
+				return 0
+			}
+			return positiveInt64(int64(floatValue))
+		}
+		return positiveInt64(parsed)
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0
+		}
+		return positiveInt64(int64(parsed))
+	default:
+		return 0
+	}
+}
+
+func positiveInt64(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {

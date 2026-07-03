@@ -266,7 +266,7 @@ export function Dashboard() {
                 <>
                   <FadeIn delay={0.05}>
                     <Suspense fallback={<PerformanceOverviewFallback />}>
-                      <LazyChannelAffinityCacheOverview />
+                      <LazyChannelAffinityCacheOverview filters={modelFilters} />
                     </Suspense>
                   </FadeIn>
                   <FadeIn delay={0.1}>
