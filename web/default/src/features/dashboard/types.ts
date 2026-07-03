@@ -72,6 +72,74 @@ export interface DashboardChartPreferences {
 }
 
 // ============================================================================
+// Channel Affinity Cache Stats
+// ============================================================================
+
+export interface ChannelAffinityUsageCacheTopKey {
+  rule_name: string
+  using_group: string
+  model: string
+  channel_id: number
+  key_fp: string
+  cached_token_rate_mode: string
+  hit: number
+  total: number
+  request_hit_rate: number
+  prompt_tokens: number
+  cached_tokens: number
+  prompt_cache_hit_tokens: number
+  last_seen_at: number
+}
+
+export interface ChannelAffinityUsageCacheAggregate {
+  rule_name: string
+  using_group: string
+  model: string
+  channel_id: number
+  cached_token_rate_mode: string
+  key_count: number
+  hit: number
+  total: number
+  request_hit_rate: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cached_tokens: number
+  prompt_cache_hit_tokens: number
+  token_cache_rate: number
+  token_cache_rate_available: boolean
+  last_seen_at: number
+  window_seconds: number
+  top_keys?: ChannelAffinityUsageCacheTopKey[]
+}
+
+export interface ChannelAffinityUsageCacheSummary {
+  enabled: boolean
+  total_keys: number
+  unknown: number
+  cache_capacity: number
+  cache_algo: string
+  cached_token_rate_mode: string
+  hit: number
+  total: number
+  request_hit_rate: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cached_tokens: number
+  prompt_cache_hit_tokens: number
+  token_cache_rate: number
+  token_cache_rate_available: boolean
+  last_seen_at: number
+  generated_at: number
+  top_keys?: ChannelAffinityUsageCacheTopKey[]
+  by_rule_name: Record<string, ChannelAffinityUsageCacheAggregate>
+  by_rule_group: ChannelAffinityUsageCacheAggregate[]
+  by_model: ChannelAffinityUsageCacheAggregate[]
+  by_channel: ChannelAffinityUsageCacheAggregate[]
+}
+
+// ============================================================================
 // API Info Types
 // ============================================================================
 

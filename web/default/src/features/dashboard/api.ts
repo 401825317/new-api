@@ -17,7 +17,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
-import type { QuotaDataItem, UptimeGroupResult } from './types'
+import type {
+  ChannelAffinityUsageCacheSummary,
+  QuotaDataItem,
+  UptimeGroupResult,
+} from './types'
 
 // ============================================================================
 // Dashboard APIs
@@ -58,6 +62,24 @@ export async function getUserQuotaDataByUsers(params: {
     '/api/data/users',
     { params }
   )
+  return res.data
+}
+
+export async function getChannelAffinityUsageCacheSummary(params?: {
+  limit?: number
+  topKeyLimit?: number
+}) {
+  const res = await api.get<{
+    success: boolean
+    message?: string
+    data?: ChannelAffinityUsageCacheSummary
+  }>('/api/log/channel_affinity_usage_cache/summary', {
+    params: {
+      limit: params?.limit,
+      top_key_limit: params?.topKeyLimit,
+    },
+    disableDuplicate: true,
+  } as Record<string, unknown>)
   return res.data
 }
 

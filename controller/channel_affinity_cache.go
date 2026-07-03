@@ -2,6 +2,7 @@ package controller
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/service"
@@ -85,4 +86,52 @@ func GetChannelAffinityUsageCacheStats(c *gin.Context) {
 		"message": "",
 		"data":    stats,
 	})
+}
+
+func GetChannelAffinityUsageCacheSummary(c *gin.Context) {
+	filter := service.ChannelAffinityUsageCacheSummaryFilter{
+		RuleName:    strings.TrimSpace(c.Query("rule_name")),
+		UsingGroup:  strings.TrimSpace(c.Query("using_group")),
+		ModelName:   strings.TrimSpace(c.Query("model")),
+		ModelNames:  parseChannelAffinityUsageCacheModelsParam(c.Query("models")),
+		ChannelID:   parsePositiveIntQuery(c.Query("channel_id")),
+		Limit:       parsePositiveIntQuery(c.Query("limit")),
+		TopKeyLimit: parsePositiveIntQuery(c.Query("top_key_limit")),
+	}
+	stats := service.GetChannelAffinityUsageCacheSummaryWithFilter(filter)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    stats,
+	})
+}
+
+func parseChannelAffinityUsageCacheModelsParam(raw string) map[string]struct{} {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	models := map[string]struct{}{}
+	for _, item := range strings.Split(raw, ",") {
+		model := strings.TrimSpace(item)
+		if model != "" {
+			models[model] = struct{}{}
+		}
+	}
+	if len(models) == 0 {
+		return nil
+	}
+	return models
+}
+
+func parsePositiveIntQuery(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return v
 }

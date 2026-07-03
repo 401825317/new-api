@@ -13,6 +13,10 @@ import (
 )
 
 func buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP string) *gin.Context {
+	return buildChannelAffinityStatsContextWithModelForTest(ruleName, usingGroup, keyFP, "", 0)
+}
+
+func buildChannelAffinityStatsContextWithModelForTest(ruleName, usingGroup, keyFP, modelName string, channelID int) *gin.Context {
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 	setChannelAffinityContext(ctx, channelAffinityMeta{
@@ -21,7 +25,11 @@ func buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP string)
 		RuleName:       ruleName,
 		UsingGroup:     usingGroup,
 		KeyFingerprint: keyFP,
+		ModelName:      modelName,
 	})
+	if channelID > 0 {
+		ctx.Set("channel_id", channelID)
+	}
 	return ctx
 }
 
@@ -102,4 +110,42 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty
 	require.EqualValues(t, 1, stats.Hit)
 	require.EqualValues(t, 25, stats.CachedTokens)
 	require.Equal(t, "", stats.CachedTokenRateMode)
+}
+
+func TestGetChannelAffinityUsageCacheSummaryWithFilter_ByModel(t *testing.T) {
+	ruleName := fmt.Sprintf("summary_rule_%d", time.Now().UnixNano())
+	usingGroup := "default"
+	modelName := fmt.Sprintf("gpt-summary-%d", time.Now().UnixNano())
+	otherModelName := fmt.Sprintf("image-summary-%d", time.Now().UnixNano())
+
+	ctx := buildChannelAffinityStatsContextWithModelForTest(ruleName, usingGroup, "fp_model_1", modelName, 7)
+	otherCtx := buildChannelAffinityStatsContextWithModelForTest(ruleName, usingGroup, "fp_model_2", otherModelName, 8)
+
+	ObserveChannelAffinityUsageCacheByRelayFormat(ctx, &dto.Usage{
+		PromptTokens: 100,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens: 20,
+		},
+	}, types.RelayFormatOpenAI)
+	ObserveChannelAffinityUsageCacheByRelayFormat(otherCtx, &dto.Usage{
+		PromptTokens: 100,
+	}, types.RelayFormatOpenAI)
+
+	summary := GetChannelAffinityUsageCacheSummaryWithFilter(ChannelAffinityUsageCacheSummaryFilter{
+		RuleName: ruleName,
+		ModelNames: map[string]struct{}{
+			modelName: {},
+		},
+	})
+
+	require.EqualValues(t, 1, summary.Total)
+	require.EqualValues(t, 1, summary.Hit)
+	require.Len(t, summary.ByModel, 1)
+	require.Equal(t, modelName, summary.ByModel[0].ModelName)
+	require.EqualValues(t, 1, summary.ByModel[0].Total)
+	require.EqualValues(t, 1, summary.ByModel[0].Hit)
+	require.True(t, summary.ByModel[0].TokenCacheRateAvailable)
+	require.InDelta(t, 0.2, summary.ByModel[0].TokenCacheRate, 0.0001)
+	require.Len(t, summary.ByChannel, 1)
+	require.EqualValues(t, 7, summary.ByChannel[0].ChannelID)
 }

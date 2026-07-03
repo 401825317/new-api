@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,6 +61,8 @@ type ChannelAffinityStatsContext struct {
 	RuleName       string
 	UsingGroup     string
 	KeyFingerprint string
+	ModelName      string
+	ChannelID      int
 	TTLSeconds     int64
 }
 
@@ -67,6 +70,9 @@ const (
 	cacheTokenRateModeCachedOverPrompt           = "cached_over_prompt"
 	cacheTokenRateModeCachedOverPromptPlusCached = "cached_over_prompt_plus_cached"
 	cacheTokenRateModeMixed                      = "mixed"
+
+	channelAffinityUsageCacheMixedValue     = "mixed"
+	channelAffinityUsageCacheMixedChannelID = -1
 )
 
 type ChannelAffinityCacheStats struct {
@@ -406,6 +412,8 @@ func GetChannelAffinityStatsContext(c *gin.Context) (ChannelAffinityStatsContext
 		RuleName:       ruleName,
 		UsingGroup:     usingGroup,
 		KeyFingerprint: keyFp,
+		ModelName:      strings.TrimSpace(meta.ModelName),
+		ChannelID:      c.GetInt("channel_id"),
 		TTLSeconds:     ttlSeconds,
 	}, true
 }
@@ -742,6 +750,8 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 type ChannelAffinityUsageCacheStats struct {
 	RuleName            string `json:"rule_name"`
 	UsingGroup          string `json:"using_group"`
+	ModelName           string `json:"model"`
+	ChannelID           int    `json:"channel_id"`
 	KeyFingerprint      string `json:"key_fp"`
 	CachedTokenRateMode string `json:"cached_token_rate_mode"`
 
@@ -757,8 +767,84 @@ type ChannelAffinityUsageCacheStats struct {
 	LastSeenAt           int64 `json:"last_seen_at"`
 }
 
+type ChannelAffinityUsageCacheTopKey struct {
+	RuleName             string  `json:"rule_name"`
+	UsingGroup           string  `json:"using_group"`
+	ModelName            string  `json:"model"`
+	ChannelID            int     `json:"channel_id"`
+	KeyFingerprint       string  `json:"key_fp"`
+	CachedTokenRateMode  string  `json:"cached_token_rate_mode"`
+	Hit                  int64   `json:"hit"`
+	Total                int64   `json:"total"`
+	RequestHitRate       float64 `json:"request_hit_rate"`
+	PromptTokens         int64   `json:"prompt_tokens"`
+	CachedTokens         int64   `json:"cached_tokens"`
+	PromptCacheHitTokens int64   `json:"prompt_cache_hit_tokens"`
+	LastSeenAt           int64   `json:"last_seen_at"`
+}
+
+type ChannelAffinityUsageCacheAggregate struct {
+	RuleName                string                            `json:"rule_name"`
+	UsingGroup              string                            `json:"using_group"`
+	ModelName               string                            `json:"model"`
+	ChannelID               int                               `json:"channel_id"`
+	CachedTokenRateMode     string                            `json:"cached_token_rate_mode"`
+	KeyCount                int                               `json:"key_count"`
+	Hit                     int64                             `json:"hit"`
+	Total                   int64                             `json:"total"`
+	RequestHitRate          float64                           `json:"request_hit_rate"`
+	PromptTokens            int64                             `json:"prompt_tokens"`
+	CompletionTokens        int64                             `json:"completion_tokens"`
+	TotalTokens             int64                             `json:"total_tokens"`
+	CachedTokens            int64                             `json:"cached_tokens"`
+	PromptCacheHitTokens    int64                             `json:"prompt_cache_hit_tokens"`
+	TokenCacheRate          float64                           `json:"token_cache_rate"`
+	TokenCacheRateAvailable bool                              `json:"token_cache_rate_available"`
+	LastSeenAt              int64                             `json:"last_seen_at"`
+	WindowSeconds           int64                             `json:"window_seconds"`
+	TopKeys                 []ChannelAffinityUsageCacheTopKey `json:"top_keys,omitempty"`
+}
+
+type ChannelAffinityUsageCacheSummary struct {
+	Enabled                 bool                                          `json:"enabled"`
+	TotalKeys               int                                           `json:"total_keys"`
+	Unknown                 int                                           `json:"unknown"`
+	CacheCapacity           int                                           `json:"cache_capacity"`
+	CacheAlgo               string                                        `json:"cache_algo"`
+	CachedTokenRateMode     string                                        `json:"cached_token_rate_mode"`
+	Hit                     int64                                         `json:"hit"`
+	Total                   int64                                         `json:"total"`
+	RequestHitRate          float64                                       `json:"request_hit_rate"`
+	PromptTokens            int64                                         `json:"prompt_tokens"`
+	CompletionTokens        int64                                         `json:"completion_tokens"`
+	TotalTokens             int64                                         `json:"total_tokens"`
+	CachedTokens            int64                                         `json:"cached_tokens"`
+	PromptCacheHitTokens    int64                                         `json:"prompt_cache_hit_tokens"`
+	TokenCacheRate          float64                                       `json:"token_cache_rate"`
+	TokenCacheRateAvailable bool                                          `json:"token_cache_rate_available"`
+	LastSeenAt              int64                                         `json:"last_seen_at"`
+	GeneratedAt             int64                                         `json:"generated_at"`
+	TopKeys                 []ChannelAffinityUsageCacheTopKey             `json:"top_keys,omitempty"`
+	ByRuleName              map[string]ChannelAffinityUsageCacheAggregate `json:"by_rule_name"`
+	ByRuleGroup             []ChannelAffinityUsageCacheAggregate          `json:"by_rule_group"`
+	ByModel                 []ChannelAffinityUsageCacheAggregate          `json:"by_model"`
+	ByChannel               []ChannelAffinityUsageCacheAggregate          `json:"by_channel"`
+}
+
+type ChannelAffinityUsageCacheSummaryFilter struct {
+	RuleName    string
+	UsingGroup  string
+	ModelName   string
+	ModelNames  map[string]struct{}
+	ChannelID   int
+	Limit       int
+	TopKeyLimit int
+}
+
 type ChannelAffinityUsageCacheCounters struct {
 	CachedTokenRateMode string `json:"cached_token_rate_mode"`
+	ModelName           string `json:"model"`
+	ChannelID           int    `json:"channel_id"`
 
 	Hit           int64 `json:"hit"`
 	Total         int64 `json:"total"`
@@ -814,6 +900,8 @@ func GetChannelAffinityUsageCacheStats(ruleName, usingGroup, keyFp string) Chann
 		CachedTokenRateMode:  v.CachedTokenRateMode,
 		RuleName:             ruleName,
 		UsingGroup:           usingGroup,
+		ModelName:            v.ModelName,
+		ChannelID:            v.ChannelID,
 		KeyFingerprint:       keyFp,
 		Hit:                  v.Hit,
 		Total:                v.Total,
@@ -825,6 +913,330 @@ func GetChannelAffinityUsageCacheStats(ruleName, usingGroup, keyFp string) Chann
 		PromptCacheHitTokens: v.PromptCacheHitTokens,
 		LastSeenAt:           v.LastSeenAt,
 	}
+}
+
+func GetChannelAffinityUsageCacheSummary() ChannelAffinityUsageCacheSummary {
+	return GetChannelAffinityUsageCacheSummaryWithFilter(ChannelAffinityUsageCacheSummaryFilter{})
+}
+
+func GetChannelAffinityUsageCacheSummaryWithFilter(filter ChannelAffinityUsageCacheSummaryFilter) ChannelAffinityUsageCacheSummary {
+	normalizeChannelAffinityUsageCacheSummaryFilter(&filter)
+
+	setting := operation_setting.GetChannelAffinitySetting()
+	enabled := false
+	if setting != nil {
+		enabled = setting.Enabled
+	}
+
+	cache := getChannelAffinityUsageCacheStatsCache()
+	capacity, _ := cache.Capacity()
+	algo, _ := cache.Algorithm()
+
+	summary := ChannelAffinityUsageCacheSummary{
+		Enabled:       enabled,
+		CacheCapacity: capacity,
+		CacheAlgo:     algo,
+		ByRuleName:    map[string]ChannelAffinityUsageCacheAggregate{},
+		ByRuleGroup:   []ChannelAffinityUsageCacheAggregate{},
+		ByModel:       []ChannelAffinityUsageCacheAggregate{},
+		ByChannel:     []ChannelAffinityUsageCacheAggregate{},
+		GeneratedAt:   time.Now().Unix(),
+	}
+
+	keys, err := cache.Keys()
+	if err != nil {
+		common.SysError(fmt.Sprintf("channel affinity usage cache stats list keys failed: err=%v", err))
+		return summary
+	}
+	summary.TotalKeys = len(keys)
+
+	byRuleGroup := map[string]ChannelAffinityUsageCacheAggregate{}
+	byModel := map[string]ChannelAffinityUsageCacheAggregate{}
+	byChannel := map[string]ChannelAffinityUsageCacheAggregate{}
+	for _, key := range keys {
+		ruleName, usingGroup, keyFp, ok := parseChannelAffinityUsageCacheFullKey(key)
+		if !ok {
+			summary.Unknown++
+			continue
+		}
+		entryKey := channelAffinityUsageCacheEntryKey(ruleName, usingGroup, keyFp)
+		if entryKey == "" {
+			summary.Unknown++
+			continue
+		}
+
+		counters, found, err := cache.Get(entryKey)
+		if err != nil || !found {
+			summary.Unknown++
+			continue
+		}
+		if !matchesChannelAffinityUsageCacheSummaryFilter(filter, ruleName, usingGroup, counters) {
+			continue
+		}
+
+		addCountersToUsageSummary(&summary, ruleName, usingGroup, keyFp, counters)
+
+		ruleAgg := summary.ByRuleName[ruleName]
+		if ruleAgg.RuleName == "" {
+			ruleAgg.RuleName = ruleName
+		}
+		ruleAgg.UsingGroup = ""
+		addCountersToUsageAggregate(&ruleAgg, ruleName, usingGroup, keyFp, counters)
+		summary.ByRuleName[ruleName] = ruleAgg
+
+		groupKey := ruleName + "\n" + usingGroup
+		groupAgg := byRuleGroup[groupKey]
+		if groupAgg.RuleName == "" {
+			groupAgg.RuleName = ruleName
+			groupAgg.UsingGroup = usingGroup
+		}
+		addCountersToUsageAggregate(&groupAgg, ruleName, usingGroup, keyFp, counters)
+		byRuleGroup[groupKey] = groupAgg
+
+		modelName := strings.TrimSpace(counters.ModelName)
+		if modelName != "" && modelName != channelAffinityUsageCacheMixedValue {
+			modelAgg := byModel[modelName]
+			if modelAgg.ModelName == "" {
+				modelAgg.ModelName = modelName
+			}
+			addCountersToUsageAggregate(&modelAgg, ruleName, usingGroup, keyFp, counters)
+			byModel[modelName] = modelAgg
+		}
+
+		if counters.ChannelID > 0 {
+			channelKey := strconv.Itoa(counters.ChannelID)
+			channelAgg := byChannel[channelKey]
+			if channelAgg.ChannelID == 0 {
+				channelAgg.ChannelID = counters.ChannelID
+			}
+			addCountersToUsageAggregate(&channelAgg, ruleName, usingGroup, keyFp, counters)
+			byChannel[channelKey] = channelAgg
+		}
+	}
+
+	finalizeUsageSummary(&summary, filter.TopKeyLimit)
+	for name, agg := range summary.ByRuleName {
+		finalizeUsageAggregate(&agg, filter.TopKeyLimit)
+		summary.ByRuleName[name] = agg
+	}
+	summary.ByRuleGroup = finalizeUsageAggregateMap(byRuleGroup, filter.Limit, filter.TopKeyLimit)
+	summary.ByModel = finalizeUsageAggregateMap(byModel, filter.Limit, filter.TopKeyLimit)
+	summary.ByChannel = finalizeUsageAggregateMap(byChannel, filter.Limit, filter.TopKeyLimit)
+
+	return summary
+}
+
+func parseChannelAffinityUsageCacheFullKey(fullKey string) (ruleName, usingGroup, keyFp string, ok bool) {
+	prefix := channelAffinityUsageCacheStatsNamespace + ":"
+	if !strings.HasPrefix(fullKey, prefix) {
+		return "", "", "", false
+	}
+	rest := strings.TrimPrefix(fullKey, prefix)
+	parts := strings.SplitN(rest, "\n", 3)
+	if len(parts) != 3 {
+		return "", "", "", false
+	}
+	ruleName = strings.TrimSpace(parts[0])
+	usingGroup = strings.TrimSpace(parts[1])
+	keyFp = strings.TrimSpace(parts[2])
+	if ruleName == "" || keyFp == "" {
+		return "", "", "", false
+	}
+	return ruleName, usingGroup, keyFp, true
+}
+
+func mergeCachedTokenRateMode(current, next string) string {
+	next = normalizeCachedTokenRateMode(next)
+	if next == "" {
+		return current
+	}
+	current = normalizeCachedTokenRateMode(current)
+	if current == "" {
+		return next
+	}
+	if current != next {
+		return cacheTokenRateModeMixed
+	}
+	return current
+}
+
+func normalizeChannelAffinityUsageCacheSummaryFilter(filter *ChannelAffinityUsageCacheSummaryFilter) {
+	if filter == nil {
+		return
+	}
+	filter.RuleName = strings.TrimSpace(filter.RuleName)
+	filter.UsingGroup = strings.TrimSpace(filter.UsingGroup)
+	filter.ModelName = strings.TrimSpace(filter.ModelName)
+	if filter.Limit <= 0 {
+		filter.Limit = 100
+	}
+	if filter.Limit > 1000 {
+		filter.Limit = 1000
+	}
+	if filter.TopKeyLimit <= 0 {
+		filter.TopKeyLimit = 5
+	}
+	if filter.TopKeyLimit > 50 {
+		filter.TopKeyLimit = 50
+	}
+}
+
+func matchesChannelAffinityUsageCacheSummaryFilter(filter ChannelAffinityUsageCacheSummaryFilter, ruleName string, usingGroup string, counters ChannelAffinityUsageCacheCounters) bool {
+	if filter.RuleName != "" && filter.RuleName != ruleName {
+		return false
+	}
+	if filter.UsingGroup != "" && filter.UsingGroup != usingGroup {
+		return false
+	}
+	modelName := strings.TrimSpace(counters.ModelName)
+	if filter.ModelName != "" && filter.ModelName != modelName {
+		return false
+	}
+	if len(filter.ModelNames) > 0 {
+		if _, ok := filter.ModelNames[modelName]; !ok {
+			return false
+		}
+	}
+	if filter.ChannelID > 0 && filter.ChannelID != counters.ChannelID {
+		return false
+	}
+	return true
+}
+
+func addCountersToUsageSummary(summary *ChannelAffinityUsageCacheSummary, ruleName string, usingGroup string, keyFp string, counters ChannelAffinityUsageCacheCounters) {
+	if summary == nil {
+		return
+	}
+	summary.CachedTokenRateMode = mergeCachedTokenRateMode(summary.CachedTokenRateMode, counters.CachedTokenRateMode)
+	summary.Hit += counters.Hit
+	summary.Total += counters.Total
+	summary.PromptTokens += counters.PromptTokens
+	summary.CompletionTokens += counters.CompletionTokens
+	summary.TotalTokens += counters.TotalTokens
+	summary.CachedTokens += counters.CachedTokens
+	summary.PromptCacheHitTokens += counters.PromptCacheHitTokens
+	if counters.LastSeenAt > summary.LastSeenAt {
+		summary.LastSeenAt = counters.LastSeenAt
+	}
+	summary.TopKeys = append(summary.TopKeys, buildChannelAffinityUsageCacheTopKey(ruleName, usingGroup, keyFp, counters))
+}
+
+func addCountersToUsageAggregate(agg *ChannelAffinityUsageCacheAggregate, ruleName string, usingGroup string, keyFp string, counters ChannelAffinityUsageCacheCounters) {
+	if agg == nil {
+		return
+	}
+	agg.KeyCount++
+	agg.CachedTokenRateMode = mergeCachedTokenRateMode(agg.CachedTokenRateMode, counters.CachedTokenRateMode)
+	agg.Hit += counters.Hit
+	agg.Total += counters.Total
+	agg.PromptTokens += counters.PromptTokens
+	agg.CompletionTokens += counters.CompletionTokens
+	agg.TotalTokens += counters.TotalTokens
+	agg.CachedTokens += counters.CachedTokens
+	agg.PromptCacheHitTokens += counters.PromptCacheHitTokens
+	if counters.LastSeenAt > agg.LastSeenAt {
+		agg.LastSeenAt = counters.LastSeenAt
+	}
+	if counters.WindowSeconds > agg.WindowSeconds {
+		agg.WindowSeconds = counters.WindowSeconds
+	}
+	agg.TopKeys = append(agg.TopKeys, buildChannelAffinityUsageCacheTopKey(ruleName, usingGroup, keyFp, counters))
+}
+
+func buildChannelAffinityUsageCacheTopKey(ruleName string, usingGroup string, keyFp string, counters ChannelAffinityUsageCacheCounters) ChannelAffinityUsageCacheTopKey {
+	return ChannelAffinityUsageCacheTopKey{
+		RuleName:             ruleName,
+		UsingGroup:           usingGroup,
+		ModelName:            counters.ModelName,
+		ChannelID:            counters.ChannelID,
+		KeyFingerprint:       keyFp,
+		CachedTokenRateMode:  counters.CachedTokenRateMode,
+		Hit:                  counters.Hit,
+		Total:                counters.Total,
+		RequestHitRate:       usageRequestHitRate(counters.Hit, counters.Total),
+		PromptTokens:         counters.PromptTokens,
+		CachedTokens:         counters.CachedTokens,
+		PromptCacheHitTokens: counters.PromptCacheHitTokens,
+		LastSeenAt:           counters.LastSeenAt,
+	}
+}
+
+func finalizeUsageSummary(summary *ChannelAffinityUsageCacheSummary, topKeyLimit int) {
+	if summary == nil {
+		return
+	}
+	summary.RequestHitRate = usageRequestHitRate(summary.Hit, summary.Total)
+	summary.TokenCacheRate, summary.TokenCacheRateAvailable = usageTokenCacheRate(summary.CachedTokenRateMode, summary.PromptTokens, summary.CachedTokens)
+	sortUsageTopKeys(summary.TopKeys)
+	if topKeyLimit > 0 && len(summary.TopKeys) > topKeyLimit {
+		summary.TopKeys = summary.TopKeys[:topKeyLimit]
+	}
+}
+
+func finalizeUsageAggregate(agg *ChannelAffinityUsageCacheAggregate, topKeyLimit int) {
+	if agg == nil {
+		return
+	}
+	agg.RequestHitRate = usageRequestHitRate(agg.Hit, agg.Total)
+	agg.TokenCacheRate, agg.TokenCacheRateAvailable = usageTokenCacheRate(agg.CachedTokenRateMode, agg.PromptTokens, agg.CachedTokens)
+	sortUsageTopKeys(agg.TopKeys)
+	if topKeyLimit > 0 && len(agg.TopKeys) > topKeyLimit {
+		agg.TopKeys = agg.TopKeys[:topKeyLimit]
+	}
+}
+
+func finalizeUsageAggregateMap(items map[string]ChannelAffinityUsageCacheAggregate, limit int, topKeyLimit int) []ChannelAffinityUsageCacheAggregate {
+	out := make([]ChannelAffinityUsageCacheAggregate, 0, len(items))
+	for _, agg := range items {
+		finalizeUsageAggregate(&agg, topKeyLimit)
+		out = append(out, agg)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Total != out[j].Total {
+			return out[i].Total > out[j].Total
+		}
+		if out[i].Hit != out[j].Hit {
+			return out[i].Hit > out[j].Hit
+		}
+		return out[i].LastSeenAt > out[j].LastSeenAt
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func sortUsageTopKeys(keys []ChannelAffinityUsageCacheTopKey) {
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Total != keys[j].Total {
+			return keys[i].Total > keys[j].Total
+		}
+		if keys[i].CachedTokens != keys[j].CachedTokens {
+			return keys[i].CachedTokens > keys[j].CachedTokens
+		}
+		return keys[i].LastSeenAt > keys[j].LastSeenAt
+	})
+}
+
+func usageRequestHitRate(hit, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return float64(hit) / float64(total)
+}
+
+func usageTokenCacheRate(mode string, promptTokens, cachedTokens int64) (float64, bool) {
+	denominator := promptTokens
+	normalizedMode := normalizeCachedTokenRateMode(mode)
+	if normalizedMode == cacheTokenRateModeCachedOverPromptPlusCached {
+		denominator = promptTokens + cachedTokens
+	} else if normalizedMode != cacheTokenRateModeCachedOverPrompt {
+		return 0, false
+	}
+	if denominator <= 0 {
+		return 0, false
+	}
+	return float64(cachedTokens) / float64(denominator), true
 }
 
 func observeChannelAffinityUsageCache(statsCtx ChannelAffinityStatsContext, usage *dto.Usage, cachedTokenRateMode string) {
@@ -859,6 +1271,21 @@ func observeChannelAffinityUsageCache(statsCtx ChannelAffinityStatsContext, usag
 			next.CachedTokenRateMode = currentMode
 		} else if next.CachedTokenRateMode != currentMode && next.CachedTokenRateMode != cacheTokenRateModeMixed {
 			next.CachedTokenRateMode = cacheTokenRateModeMixed
+		}
+	}
+	modelName := strings.TrimSpace(statsCtx.ModelName)
+	if modelName != "" {
+		if next.ModelName == "" {
+			next.ModelName = modelName
+		} else if next.ModelName != modelName {
+			next.ModelName = channelAffinityUsageCacheMixedValue
+		}
+	}
+	if statsCtx.ChannelID > 0 {
+		if next.ChannelID == 0 {
+			next.ChannelID = statsCtx.ChannelID
+		} else if next.ChannelID != statsCtx.ChannelID {
+			next.ChannelID = channelAffinityUsageCacheMixedChannelID
 		}
 	}
 	next.Total++
