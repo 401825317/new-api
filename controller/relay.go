@@ -230,9 +230,20 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
+		skipRetryRule, matchedSkipRetryRule := matchRelaySkipRetryRule(c, relayInfo, newAPIError)
+		if matchedSkipRetryRule {
+			if skipRetryRule.SkipChannelErrorLog {
+				logger.LogInfo(c, fmt.Sprintf("skip channel error log and retry by rule %s: %s", retrySkipRuleLogName(skipRetryRule), common.LocalLogPreview(newAPIError.Error())))
+			} else {
+				processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
+				logger.LogInfo(c, fmt.Sprintf("skip retry by rule %s: %s", retrySkipRuleLogName(skipRetryRule), common.LocalLogPreview(newAPIError.Error())))
+			}
+			break
+		}
+
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		if !shouldRetry(c, relayInfo, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
 	}
@@ -323,11 +334,14 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	return channel, nil
 }
 
-func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
+func shouldRetry(c *gin.Context, info *relaycommon.RelayInfo, openaiErr *types.NewAPIError, retryTimes int) bool {
 	if openaiErr == nil {
 		return false
 	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+		return false
+	}
+	if operation_setting.ShouldSkipRetryByRules(openaiErr, buildRetrySkipRuleContext(c, info)) {
 		return false
 	}
 	if types.IsChannelError(openaiErr) {
@@ -353,6 +367,34 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return false
 	}
 	return operation_setting.ShouldRetryByStatusCode(code)
+}
+
+func matchRelaySkipRetryRule(c *gin.Context, info *relaycommon.RelayInfo, openaiErr *types.NewAPIError) (operation_setting.RetrySkipRule, bool) {
+	return operation_setting.MatchSkipRetryRule(openaiErr, buildRetrySkipRuleContext(c, info))
+}
+
+func buildRetrySkipRuleContext(c *gin.Context, info *relaycommon.RelayInfo) operation_setting.RetrySkipRuleContext {
+	ctx := operation_setting.RetrySkipRuleContext{
+		StreamStarted: helper.HasStreamResponseStarted(c),
+	}
+	if info == nil {
+		return ctx
+	}
+	if info.ReceivedResponseCount > 0 {
+		ctx.StreamStarted = true
+	}
+	if info.StreamStatus != nil {
+		ctx.StreamEndReason = string(info.StreamStatus.EndReason)
+	}
+	return ctx
+}
+
+func retrySkipRuleLogName(rule operation_setting.RetrySkipRule) string {
+	name := strings.TrimSpace(rule.Name)
+	if name == "" {
+		return "<unnamed>"
+	}
+	return name
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {

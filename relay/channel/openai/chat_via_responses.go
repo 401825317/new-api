@@ -511,6 +511,13 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 	})
 
+	if responsesToChatStreamClientGoneAfterStarted(info) {
+		if usage.TotalTokens == 0 {
+			usage = service.ResponseText2Usage(c, usageText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+		}
+		return usage, nil
+	}
+
 	if streamErr != nil {
 		return nil, streamErr
 	}
@@ -547,4 +554,12 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		helper.Done(c)
 	}
 	return usage, nil
+}
+
+func responsesToChatStreamClientGoneAfterStarted(info *relaycommon.RelayInfo) bool {
+	if info == nil || info.StreamStatus == nil {
+		return false
+	}
+	return info.ReceivedResponseCount > 0 &&
+		info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone
 }

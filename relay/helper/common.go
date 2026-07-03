@@ -14,6 +14,22 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const streamResponseStartedKey = "stream_response_started"
+
+func MarkStreamResponseStarted(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(streamResponseStartedKey, true)
+}
+
+func HasStreamResponseStarted(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	return c.GetBool(streamResponseStartedKey)
+}
+
 func FlushWriter(c *gin.Context) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -34,6 +50,7 @@ func FlushWriter(c *gin.Context) (err error) {
 		return errors.New("streaming error: flusher not found")
 	}
 
+	MarkStreamResponseStarted(c)
 	flusher.Flush()
 	return nil
 }

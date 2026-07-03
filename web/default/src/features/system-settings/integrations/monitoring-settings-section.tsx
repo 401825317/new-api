@@ -52,6 +52,16 @@ const numericString = z.string().refine((value) => {
   return !Number.isNaN(Number(trimmed)) && Number(trimmed) >= 0
 }, 'Enter a non-negative number or leave empty')
 
+const jsonArrayString = z.string().refine((value) => {
+  const trimmed = value.trim()
+  if (!trimmed) return true
+  try {
+    return Array.isArray(JSON.parse(trimmed))
+  } catch {
+    return false
+  }
+}, 'Enter a JSON array')
+
 const monitoringSchema = z
   .object({
     ChannelDisableThreshold: numericString,
@@ -61,6 +71,7 @@ const monitoringSchema = z
     AutomaticDisableKeywords: z.string(),
     AutomaticDisableStatusCodes: z.string(),
     AutomaticRetryStatusCodes: z.string(),
+    AutomaticSkipRetryRules: jsonArrayString,
     monitor_setting: z.object({
       auto_test_channel_enabled: z.boolean(),
       auto_test_channel_minutes: z.coerce
@@ -109,6 +120,7 @@ type MonitoringSettingsSectionProps = {
     AutomaticDisableKeywords: string
     AutomaticDisableStatusCodes: string
     AutomaticRetryStatusCodes: string
+    AutomaticSkipRetryRules: string
     'monitor_setting.auto_test_channel_enabled': boolean
     'monitor_setting.auto_test_channel_minutes': number
   }
@@ -116,6 +128,16 @@ type MonitoringSettingsSectionProps = {
 
 function normalizeLineEndings(value: string) {
   return value.replace(/\r\n/g, '\n')
+}
+
+function normalizeJsonArrayText(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  try {
+    return JSON.stringify(JSON.parse(trimmed))
+  } catch {
+    return trimmed
+  }
 }
 
 type NormalizedMonitoringValues = {
@@ -126,6 +148,7 @@ type NormalizedMonitoringValues = {
   AutomaticDisableKeywords: string
   AutomaticDisableStatusCodes: string
   AutomaticRetryStatusCodes: string
+  AutomaticSkipRetryRules: string
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
 }
@@ -142,6 +165,7 @@ const buildFormDefaults = (
   ),
   AutomaticDisableStatusCodes: defaults.AutomaticDisableStatusCodes ?? '',
   AutomaticRetryStatusCodes: defaults.AutomaticRetryStatusCodes ?? '',
+  AutomaticSkipRetryRules: defaults.AutomaticSkipRetryRules ?? '',
   monitor_setting: {
     auto_test_channel_enabled:
       defaults['monitor_setting.auto_test_channel_enabled'],
@@ -166,6 +190,9 @@ const normalizeDefaults = (
   AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
     defaults.AutomaticRetryStatusCodes ?? ''
   ).normalized,
+  AutomaticSkipRetryRules: normalizeJsonArrayText(
+    defaults.AutomaticSkipRetryRules ?? ''
+  ),
   'monitor_setting.auto_test_channel_enabled':
     defaults['monitor_setting.auto_test_channel_enabled'],
   'monitor_setting.auto_test_channel_minutes':
@@ -188,6 +215,9 @@ const normalizeFormValues = (
   AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
     values.AutomaticRetryStatusCodes
   ).normalized,
+  AutomaticSkipRetryRules: normalizeJsonArrayText(
+    values.AutomaticSkipRetryRules
+  ),
   'monitor_setting.auto_test_channel_enabled':
     values.monitor_setting.auto_test_channel_enabled,
   'monitor_setting.auto_test_channel_minutes':
@@ -481,6 +511,31 @@ export function MonitoringSettingsSection({
               )}
             />
           </div>
+
+          <FormField
+            control={form.control}
+            name='AutomaticSkipRetryRules'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Skip retry rules')}</FormLabel>
+                <FormControl>
+                  <Textarea
+                    rows={8}
+                    className='font-mono text-xs'
+                    placeholder='[{"name":"client_gone_after_stream_started","after_stream_started":true,"stream_end_reasons":["client_gone"],"skip_channel_error_log":true}]'
+                    {...field}
+                    onChange={(event) => field.onChange(event.target.value)}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'JSON rules that stop fallback retry when status codes, error codes, messages, regexes, or stream end reasons match.'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
         </SettingsForm>
       </Form>
     </SettingsSection>
