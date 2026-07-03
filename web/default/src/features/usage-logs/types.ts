@@ -157,7 +157,12 @@ export interface LogOtherData {
   audio_ratio?: number
   audio_completion_ratio?: number
   frt?: number
+  frt_source?: string
   end_to_end_frt?: number
+  upstream_response_ms?: number
+  end_to_end_upstream_response_ms?: number
+  stream_first_data_ms?: number
+  stream_first_content_ms?: number
   pre_upstream_ms?: number
   // Tiered (expression-based) billing fields, set by backend when
   // billing_mode === 'tiered_expr'. expr_b64 is the base64-encoded billing

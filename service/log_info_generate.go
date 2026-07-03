@@ -43,12 +43,9 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	other["cache_ratio"] = cacheRatio
 	other["model_price"] = modelPrice
 	other["user_group_ratio"] = userGroupRatio
-	other["frt"] = float64(relayInfo.UpstreamFirstResponseLatencyMs())
-	if endToEndFRT := relayInfo.EndToEndFirstResponseLatencyMs(); endToEndFRT > 0 {
-		other["end_to_end_frt"] = float64(endToEndFRT)
-	}
-	if preUpstreamMs := relayInfo.PreUpstreamLatencyMs(); preUpstreamMs > 0 {
-		other["pre_upstream_ms"] = float64(preUpstreamMs)
+	appendTimingInfo(relayInfo, other)
+	if relayInfo == nil {
+		return other
 	}
 	if relayInfo.ReasoningEffort != "" {
 		other["reasoning_effort"] = relayInfo.ReasoningEffort
@@ -86,6 +83,40 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	appendParamOverrideInfo(relayInfo, other)
 	appendStreamStatus(relayInfo, other)
 	return other
+}
+
+func appendTimingInfo(relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+	if relayInfo == nil || other == nil {
+		return
+	}
+
+	upstreamFirstDataMs := relayInfo.UpstreamFirstResponseLatencyMs()
+	frtMs := upstreamFirstDataMs
+	frtSource := "upstream_first_data"
+	if relayInfo.IsStream {
+		if upstreamResponseMs := relayInfo.UpstreamResponseLatencyMs(); upstreamResponseMs > 0 {
+			frtMs = upstreamResponseMs
+			frtSource = "upstream_response"
+			other["upstream_response_ms"] = float64(upstreamResponseMs)
+			if endToEndUpstreamResponseMs := relayInfo.EndToEndUpstreamResponseLatencyMs(); endToEndUpstreamResponseMs > 0 {
+				other["end_to_end_upstream_response_ms"] = float64(endToEndUpstreamResponseMs)
+			}
+		}
+		if upstreamFirstDataMs > 0 {
+			other["stream_first_data_ms"] = float64(upstreamFirstDataMs)
+		}
+		if upstreamFirstContentMs := relayInfo.UpstreamFirstStreamContentLatencyMs(); upstreamFirstContentMs > 0 {
+			other["stream_first_content_ms"] = float64(upstreamFirstContentMs)
+		}
+	}
+	other["frt"] = float64(frtMs)
+	other["frt_source"] = frtSource
+	if endToEndFRT := relayInfo.EndToEndFirstResponseLatencyMs(); endToEndFRT > 0 {
+		other["end_to_end_frt"] = float64(endToEndFRT)
+	}
+	if preUpstreamMs := relayInfo.PreUpstreamLatencyMs(); preUpstreamMs > 0 {
+		other["pre_upstream_ms"] = float64(preUpstreamMs)
+	}
 }
 
 func appendParamOverrideInfo(relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {

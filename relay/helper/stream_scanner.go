@@ -473,7 +473,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				continue
 			}
 			if !strings.HasPrefix(data, "[DONE]") {
+				contentLike := isStreamTimingContentLikeData(data)
 				info.SetFirstResponseTime()
+				info.SetFirstStreamDataTime(contentLike)
 				info.ReceivedResponseCount++
 				timingDebug.markFirstData(data, info.ReceivedResponseCount)
 

@@ -95,7 +95,10 @@ type RelayInfo struct {
 	TokenUnlimited           bool
 	StartTime                time.Time
 	UpstreamRequestStartTime time.Time
+	UpstreamResponseTime     time.Time
 	FirstResponseTime        time.Time
+	FirstStreamDataTime      time.Time
+	FirstStreamContentTime   time.Time
 	isFirstResponse          bool
 	//SendLastReasoningResponse bool
 	IsStream               bool
@@ -270,10 +273,11 @@ func (info *RelayInfo) ToString() string {
 	// Time info
 	latencyMs := info.EndToEndFirstResponseLatencyMs()
 	upstreamLatencyMs := info.UpstreamFirstResponseLatencyMs()
+	upstreamResponseMs := info.UpstreamResponseLatencyMs()
 	preUpstreamMs := info.PreUpstreamLatencyMs()
-	fmt.Fprintf(b, "Timing{ Start: %s, UpstreamStart: %s, FirstResponse: %s, LatencyMs: %d, UpstreamLatencyMs: %d, PreUpstreamMs: %d }, ",
+	fmt.Fprintf(b, "Timing{ Start: %s, UpstreamStart: %s, UpstreamResponse: %s, FirstResponse: %s, LatencyMs: %d, UpstreamLatencyMs: %d, UpstreamResponseMs: %d, PreUpstreamMs: %d }, ",
 		info.StartTime.Format(time.RFC3339Nano), info.UpstreamRequestStartTime.Format(time.RFC3339Nano),
-		info.FirstResponseTime.Format(time.RFC3339Nano), latencyMs, upstreamLatencyMs, preUpstreamMs)
+		info.UpstreamResponseTime.Format(time.RFC3339Nano), info.FirstResponseTime.Format(time.RFC3339Nano), latencyMs, upstreamLatencyMs, upstreamResponseMs, preUpstreamMs)
 
 	// Audio / realtime
 	if info.InputAudioFormat != "" || info.OutputAudioFormat != "" || len(info.RealtimeTools) > 0 || info.AudioUsage {
@@ -667,11 +671,31 @@ func (info *RelayInfo) SetFirstResponseTime() {
 	}
 }
 
+func (info *RelayInfo) SetFirstStreamDataTime(contentLike bool) {
+	if info == nil {
+		return
+	}
+	now := time.Now()
+	if info.FirstStreamDataTime.IsZero() {
+		info.FirstStreamDataTime = now
+	}
+	if contentLike && info.FirstStreamContentTime.IsZero() {
+		info.FirstStreamContentTime = now
+	}
+}
+
 func (info *RelayInfo) SetUpstreamRequestStartTime() {
 	if info == nil || info.HasSendResponse() {
 		return
 	}
 	info.UpstreamRequestStartTime = time.Now()
+}
+
+func (info *RelayInfo) SetUpstreamResponseTime() {
+	if info == nil || info.UpstreamResponseTime.After(info.UpstreamRequestStartTime) {
+		return
+	}
+	info.UpstreamResponseTime = time.Now()
 }
 
 func (info *RelayInfo) EndToEndFirstResponseLatencyMs() int64 {
@@ -696,6 +720,43 @@ func (info *RelayInfo) PreUpstreamLatencyMs() int64 {
 		return 0
 	}
 	return nonNegativeMilliseconds(info.UpstreamRequestStartTime.Sub(info.StartTime))
+}
+
+func (info *RelayInfo) UpstreamResponseLatencyMs() int64 {
+	if info == nil || info.UpstreamResponseTime.IsZero() {
+		return 0
+	}
+	if info.UpstreamRequestStartTime.IsZero() {
+		return info.EndToEndUpstreamResponseLatencyMs()
+	}
+	return nonNegativeMilliseconds(info.UpstreamResponseTime.Sub(info.UpstreamRequestStartTime))
+}
+
+func (info *RelayInfo) EndToEndUpstreamResponseLatencyMs() int64 {
+	if info == nil || info.StartTime.IsZero() || info.UpstreamResponseTime.IsZero() {
+		return 0
+	}
+	return nonNegativeMilliseconds(info.UpstreamResponseTime.Sub(info.StartTime))
+}
+
+func (info *RelayInfo) UpstreamFirstStreamDataLatencyMs() int64 {
+	if info == nil || info.FirstStreamDataTime.IsZero() {
+		return 0
+	}
+	if info.UpstreamRequestStartTime.IsZero() {
+		return nonNegativeMilliseconds(info.FirstStreamDataTime.Sub(info.StartTime))
+	}
+	return nonNegativeMilliseconds(info.FirstStreamDataTime.Sub(info.UpstreamRequestStartTime))
+}
+
+func (info *RelayInfo) UpstreamFirstStreamContentLatencyMs() int64 {
+	if info == nil || info.FirstStreamContentTime.IsZero() {
+		return 0
+	}
+	if info.UpstreamRequestStartTime.IsZero() {
+		return nonNegativeMilliseconds(info.FirstStreamContentTime.Sub(info.StartTime))
+	}
+	return nonNegativeMilliseconds(info.FirstStreamContentTime.Sub(info.UpstreamRequestStartTime))
 }
 
 func nonNegativeMilliseconds(d time.Duration) int64 {

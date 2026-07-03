@@ -660,6 +660,39 @@ export function DetailsDialog(props: DetailsDialogProps) {
               }
             />
           )}
+
+          {props.log.is_stream &&
+            other &&
+            (other.upstream_response_ms != null ||
+              other.stream_first_data_ms != null ||
+              other.stream_first_content_ms != null) && (
+              <DetailRow
+                label={t('Stream Timing')}
+                value={
+                  <span className='inline-flex flex-wrap gap-x-2 gap-y-1'>
+                    {other.upstream_response_ms != null && (
+                      <span>
+                        {t('Resp')}:{' '}
+                        {formatUseTime(other.upstream_response_ms / 1000)}
+                      </span>
+                    )}
+                    {other.stream_first_data_ms != null && (
+                      <span>
+                        {t('Data')}:{' '}
+                        {formatUseTime(other.stream_first_data_ms / 1000)}
+                      </span>
+                    )}
+                    {other.stream_first_content_ms != null && (
+                      <span>
+                        {t('Content')}:{' '}
+                        {formatUseTime(other.stream_first_content_ms / 1000)}
+                      </span>
+                    )}
+                  </span>
+                }
+                mono
+              />
+            )}
         </div>
 
         {/* Request conversion (admin only, not for refund) */}
