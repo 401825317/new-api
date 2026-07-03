@@ -25,7 +25,7 @@ func TestParseTaskResultDoneWithVideoURL(t *testing.T) {
 	require.Equal(t, "https://example.com/video.mp4", task.Url)
 }
 
-func TestParseTaskResultPrefersRawVideoURL(t *testing.T) {
+func TestParseTaskResultPrefersDownstreamProxyURLOverRawVideoURL(t *testing.T) {
 	adaptor := &TaskAdaptor{}
 	task, err := adaptor.ParseTaskResult([]byte(`{
 		"id": "task_upstream",
@@ -39,10 +39,10 @@ func TestParseTaskResultPrefersRawVideoURL(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, string(model.TaskStatusSuccess), task.Status)
-	require.Equal(t, "https://vidgen.x.ai/raw.mp4", task.Url)
+	require.Equal(t, "https://video.example.com/video/grok/task?exp=1&sig=old", task.Url)
 }
 
-func TestParseTaskResultUsesOutputBeforeSignedURL(t *testing.T) {
+func TestParseTaskResultPrefersDownstreamProxyURLOverRawOutput(t *testing.T) {
 	adaptor := &TaskAdaptor{}
 	task, err := adaptor.ParseTaskResult([]byte(`{
 		"id": "task_upstream",
@@ -53,7 +53,7 @@ func TestParseTaskResultUsesOutputBeforeSignedURL(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, string(model.TaskStatusSuccess), task.Status)
-	require.Equal(t, "https://vidgen.x.ai/output.mp4", task.Url)
+	require.Equal(t, "https://video.example.com/video/grok/task?exp=1&sig=old", task.Url)
 }
 
 func TestParseTaskResultCompletedWithResultURL(t *testing.T) {

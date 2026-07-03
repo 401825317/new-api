@@ -227,6 +227,9 @@ func RewriteOpenAIVideoResultURL(data []byte, task *model.Task) ([]byte, error) 
 			return nil, fmt.Errorf("set %s failed: %w", path, err)
 		}
 	}
+	if data, err = sjson.SetBytes(data, "output.0", publicURL); err != nil {
+		return nil, fmt.Errorf("set output url failed: %w", err)
+	}
 	return data, nil
 }
 

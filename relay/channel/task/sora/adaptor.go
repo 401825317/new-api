@@ -343,20 +343,23 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 }
 
 func (r responseTask) resultURL() string {
-	if r.VideoURL != "" {
-		return r.VideoURL
-	}
-	if len(r.Output) > 0 && strings.TrimSpace(r.Output[0]) != "" {
-		return strings.TrimSpace(r.Output[0])
-	}
-	if r.ResultURL != "" {
-		return r.ResultURL
-	}
-	if r.URL != "" {
-		return r.URL
-	}
+	candidates := []string{r.ResultURL, r.URL}
 	if r.Video != nil {
-		return r.Video.URL
+		candidates = append(candidates, r.Video.URL)
+	}
+	candidates = append(candidates, r.VideoURL)
+	candidates = append(candidates, r.Output...)
+
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" && !taskcommon.IsAllowedGrokVideoURL(candidate) {
+			return candidate
+		}
+	}
+	for _, candidate := range candidates {
+		if candidate = strings.TrimSpace(candidate); candidate != "" {
+			return candidate
+		}
 	}
 	return ""
 }

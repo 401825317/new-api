@@ -91,7 +91,7 @@ func TestRewriteOpenAIVideoResultURL(t *testing.T) {
 	}
 
 	want := "https://video.junfeiai.hk-proxy.lingzhiwuxian.com/v1/videos/task_upstream/content"
-	for _, path := range []string{"metadata.url", "url", "result_url", "video.url"} {
+	for _, path := range []string{"metadata.url", "url", "result_url", "video.url", "output.0"} {
 		if value := gjson.GetBytes(got, path).String(); value != want {
 			t.Fatalf("%s = %q, want %q", path, value, want)
 		}
