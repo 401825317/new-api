@@ -75,17 +75,10 @@ export function ChannelAffinityCacheOverview() {
     () => (summary?.by_channel ?? []).slice(0, TOP_CHANNEL_LIMIT),
     [summary?.by_channel]
   )
+  const hasData = !!summary && summary.total > 0
 
   if (statsQuery.isLoading) {
     return <ChannelAffinityCacheSkeleton />
-  }
-
-  if (!summary || summary.total <= 0) {
-    return (
-      <div className='text-muted-foreground overflow-hidden rounded-lg border px-4 py-3 text-center text-xs'>
-        {t('No cache hit data available')}
-      </div>
-    )
   }
 
   return (
@@ -97,7 +90,7 @@ export function ChannelAffinityCacheOverview() {
             aria-hidden='true'
           />
           <span className='text-xs font-semibold whitespace-nowrap'>
-            {t('Prompt cache hit')}
+            {t('Prompt cache hit rate')}
           </span>
         </div>
 
@@ -106,16 +99,18 @@ export function ChannelAffinityCacheOverview() {
         <div className='flex flex-wrap items-center gap-x-5 gap-y-2'>
           <InlineMetric
             icon={Gauge}
-            label={t('Cache Hit')}
-            value={formatRate(summary.request_hit_rate)}
-            valueClassName={getRateTextClass(summary.request_hit_rate)}
+            label={t('Request hit rate')}
+            value={hasData ? formatRate(summary.request_hit_rate) : '-'}
+            valueClassName={
+              hasData ? getRateTextClass(summary.request_hit_rate) : undefined
+            }
           />
           <InlineMetric
             icon={Network}
-            label={t('Token cache')}
-            value={tokenCacheRate(summary)}
+            label={t('Token cache rate')}
+            value={hasData ? tokenCacheRate(summary) : '-'}
             valueClassName={
-              summary.token_cache_rate_available
+              hasData && summary.token_cache_rate_available
                 ? getRateTextClass(summary.token_cache_rate)
                 : undefined
             }
@@ -123,16 +118,27 @@ export function ChannelAffinityCacheOverview() {
           <InlineMetric
             icon={Route}
             label={t('Requests')}
-            value={requestHitValue(summary)}
+            value={hasData ? requestHitValue(summary) : '0/0'}
           />
           <InlineMetric
             icon={Hash}
             label={t('Keys')}
-            value={formatCompactNumber(summary.total_keys)}
+            value={hasData ? formatCompactNumber(summary.total_keys) : '0'}
           />
         </div>
 
-        {topModels.length > 0 && (
+        {!hasData && (
+          <>
+            <div className='bg-border hidden h-4 w-px md:block' />
+            <span className='text-muted-foreground text-xs'>
+              {statsQuery.isError
+                ? t('Failed to load prompt cache hit data')
+                : t('No prompt cache usage in current window')}
+            </span>
+          </>
+        )}
+
+        {hasData && topModels.length > 0 && (
           <>
             <div className='bg-border hidden h-4 w-px lg:block' />
             <BadgeGroup
@@ -143,7 +149,7 @@ export function ChannelAffinityCacheOverview() {
           </>
         )}
 
-        {topChannels.length > 0 && (
+        {hasData && topChannels.length > 0 && (
           <>
             <div className='bg-border hidden h-4 w-px xl:block' />
             <BadgeGroup
