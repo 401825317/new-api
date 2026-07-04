@@ -91,6 +91,11 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		return
 	}
 	CloseResponseBodyGracefully(resp)
+	upstreamDiagnostics := buildUpstreamDiagnostics(resp, responseBody)
+	newAPIErrorOptions := upstreamDiagnosticsOptions(upstreamDiagnostics)
+	if len(newAPIErrorOptions) > 0 {
+		newApiErr = types.InitOpenAIError(types.ErrorCodeBadResponseStatusCode, resp.StatusCode, newAPIErrorOptions...)
+	}
 	var errResponse dto.GeneralErrorResponse
 	responseBodyText := string(responseBody)
 	responseBodyPreview := common.LocalLogPreview(responseBodyText)
@@ -116,18 +121,95 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		// General format error (OpenAI, Anthropic, Gemini, etc.)
 		oaiError := errResponse.TryToOpenAIError()
 		if oaiError != nil {
-			newApiErr = types.WithOpenAIError(*oaiError, resp.StatusCode)
+			newApiErr = types.WithOpenAIError(*oaiError, resp.StatusCode, newAPIErrorOptions...)
 			if showBodyWhenFail {
 				newApiErr.Err = buildErrWithBody(newApiErr.Error())
 			}
 			return
 		}
 	}
-	newApiErr = types.NewOpenAIError(errors.New(errResponse.ToMessage()), types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
+	newApiErr = types.NewOpenAIError(errors.New(errResponse.ToMessage()), types.ErrorCodeBadResponseStatusCode, resp.StatusCode, newAPIErrorOptions...)
 	if showBodyWhenFail {
 		newApiErr.Err = buildErrWithBody(newApiErr.Error())
 	}
 	return
+}
+
+var upstreamDiagnosticResponseHeaders = map[string]struct{}{
+	"cf-cache-status":                 {},
+	"cf-mitigated":                    {},
+	"cf-ray":                          {},
+	"content-length":                  {},
+	"content-type":                    {},
+	"date":                            {},
+	"server":                          {},
+	"x-envoy-upstream-service-time":   {},
+	"x-openai-request-id":             {},
+	"x-request-id":                    {},
+	"x-zeabur-request-id":             {},
+	"x-zeabur-upstream-response-time": {},
+}
+
+func upstreamDiagnosticsOptions(diagnostics map[string]interface{}) []types.NewAPIErrorOptions {
+	if len(diagnostics) == 0 {
+		return nil
+	}
+	return []types.NewAPIErrorOptions{types.ErrOptionWithUpstreamDiagnostics(diagnostics)}
+}
+
+func buildUpstreamDiagnostics(resp *http.Response, responseBody []byte) map[string]interface{} {
+	if resp == nil {
+		return nil
+	}
+
+	diagnostics := make(map[string]interface{})
+	if resp.Request != nil {
+		diagnostics["request_method"] = resp.Request.Method
+		if resp.Request.URL != nil {
+			sanitizedURL := *resp.Request.URL
+			sanitizedURL.User = nil
+			sanitizedURL.RawQuery = ""
+			sanitizedURL.Fragment = ""
+			diagnostics["request_url"] = sanitizedURL.String()
+			diagnostics["request_host"] = resp.Request.URL.Host
+			diagnostics["request_scheme"] = resp.Request.URL.Scheme
+		}
+		if trace := common.UpstreamRequestTraceFromContext(resp.Request.Context()); trace != nil {
+			if snapshot := trace.Snapshot(); len(snapshot) > 0 {
+				diagnostics["request_trace"] = snapshot
+			}
+		}
+	}
+
+	if headers := collectUpstreamDiagnosticHeaders(resp.Header); len(headers) > 0 {
+		diagnostics["response_headers"] = headers
+	}
+	if len(responseBody) > 0 {
+		bodyText := string(responseBody)
+		diagnostics["response_body_bytes"] = len(responseBody)
+		diagnostics["response_body_preview"] = common.LocalLogPreview(bodyText)
+		diagnostics["response_body_truncated"] = !common.DebugEnabled && len(bodyText) > common.LocalLogContentLimit
+	}
+	return diagnostics
+}
+
+func collectUpstreamDiagnosticHeaders(headers http.Header) map[string]interface{} {
+	if len(headers) == 0 {
+		return nil
+	}
+	result := make(map[string]interface{})
+	for name, values := range headers {
+		lowerName := strings.ToLower(name)
+		if _, ok := upstreamDiagnosticResponseHeaders[lowerName]; !ok {
+			continue
+		}
+		if len(values) == 1 {
+			result[http.CanonicalHeaderKey(name)] = values[0]
+			continue
+		}
+		result[http.CanonicalHeaderKey(name)] = append([]string(nil), values...)
+	}
+	return result
 }
 
 func ResetStatusCode(newApiErr *types.NewAPIError, statusCodeMappingStr string) {

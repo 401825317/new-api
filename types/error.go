@@ -88,14 +88,15 @@ const (
 )
 
 type NewAPIError struct {
-	Err            error
-	RelayError     any
-	skipRetry      bool
-	recordErrorLog *bool
-	errorType      ErrorType
-	errorCode      ErrorCode
-	StatusCode     int
-	Metadata       json.RawMessage
+	Err                 error
+	RelayError          any
+	skipRetry           bool
+	recordErrorLog      *bool
+	errorType           ErrorType
+	errorCode           ErrorCode
+	StatusCode          int
+	Metadata            json.RawMessage
+	upstreamDiagnostics map[string]interface{}
 }
 
 // Unwrap enables errors.Is / errors.As to work with NewAPIError by exposing the underlying error.
@@ -118,6 +119,17 @@ func (e *NewAPIError) GetErrorType() ErrorType {
 		return ""
 	}
 	return e.errorType
+}
+
+func (e *NewAPIError) GetUpstreamDiagnostics() map[string]interface{} {
+	if e == nil || len(e.upstreamDiagnostics) == 0 {
+		return nil
+	}
+	result := make(map[string]interface{}, len(e.upstreamDiagnostics))
+	for key, value := range e.upstreamDiagnostics {
+		result[key] = value
+	}
+	return result
 }
 
 func (e *NewAPIError) Error() string {
@@ -393,6 +405,18 @@ func ErrOptionWithNoRecordErrorLog() NewAPIErrorOptions {
 func ErrOptionWithStatusCode(statusCode int) NewAPIErrorOptions {
 	return func(e *NewAPIError) {
 		e.StatusCode = statusCode
+	}
+}
+
+func ErrOptionWithUpstreamDiagnostics(diagnostics map[string]interface{}) NewAPIErrorOptions {
+	return func(e *NewAPIError) {
+		if len(diagnostics) == 0 {
+			return
+		}
+		e.upstreamDiagnostics = make(map[string]interface{}, len(diagnostics))
+		for key, value := range diagnostics {
+			e.upstreamDiagnostics[key] = value
+		}
 	}
 }
 

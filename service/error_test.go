@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -148,6 +149,38 @@ func TestRelayErrorHandlerKeepsInvalidJSONBodyInDebugLog(t *testing.T) {
 	require.NotNil(t, newAPIError)
 	require.NotContains(t, logBuffer.String(), "[truncated")
 	require.Contains(t, logBuffer.String(), body)
+}
+
+func TestRelayErrorHandlerRecordsUpstreamDiagnostics(t *testing.T) {
+	trace := common.NewUpstreamRequestTrace()
+	trace.SetProxyURL("http://proxy.example")
+	req := httptest.NewRequest(http.MethodPost, "https://cf-global.junfeiai.com/v1/chat/completions?api_key=secret", nil)
+	req = req.WithContext(common.ContextWithUpstreamRequestTrace(req.Context(), trace))
+
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header: http.Header{
+			"Cf-Ray":        []string{"ray-id"},
+			"Content-Type":  []string{"text/plain"},
+			"Authorization": []string{"Bearer secret"},
+		},
+		Body:    io.NopCloser(strings.NewReader("blocked")),
+		Request: req,
+	}
+
+	newAPIError := RelayErrorHandler(context.Background(), resp, false)
+
+	require.NotNil(t, newAPIError)
+	diagnostics := newAPIError.GetUpstreamDiagnostics()
+	require.Equal(t, "https://cf-global.junfeiai.com/v1/chat/completions", diagnostics["request_url"])
+	require.Equal(t, "cf-global.junfeiai.com", diagnostics["request_host"])
+	require.Equal(t, "ray-id", diagnostics["response_headers"].(map[string]interface{})["Cf-Ray"])
+	require.NotContains(t, diagnostics["response_headers"], "Authorization")
+	require.Equal(t, len("blocked"), diagnostics["response_body_bytes"])
+	require.Equal(t, "blocked", diagnostics["response_body_preview"])
+	require.Equal(t, false, diagnostics["response_body_truncated"])
+	require.Equal(t, true, diagnostics["request_trace"].(map[string]interface{})["proxy_configured"])
+	require.Equal(t, "http", diagnostics["request_trace"].(map[string]interface{})["proxy_scheme"])
 }
 
 func withDebugEnabled(t *testing.T, enabled bool) {

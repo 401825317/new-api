@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"regexp"
 	"strings"
 	"sync"
@@ -556,6 +557,14 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 			}()
 		}
 	}
+
+	trace := common2.NewUpstreamRequestTrace()
+	if info != nil {
+		trace.SetProxyURL(info.ChannelSetting.Proxy)
+	}
+	traceCtx := common2.ContextWithUpstreamRequestTrace(req.Context(), trace)
+	traceCtx = httptrace.WithClientTrace(traceCtx, trace.ClientTrace())
+	req = req.WithContext(traceCtx)
 
 	info.SetUpstreamRequestStartTime()
 	logUpstreamTiming(c, info, req, "request_start", nil, nil)

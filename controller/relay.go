@@ -425,6 +425,9 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		other["channel_id"] = channelId
 		other["channel_name"] = c.GetString("channel_name")
 		other["channel_type"] = c.GetInt("channel_type")
+		if upstreamDiagnostics := err.GetUpstreamDiagnostics(); len(upstreamDiagnostics) > 0 {
+			other["upstream_diagnostics"] = upstreamDiagnostics
+		}
 		adminInfo := make(map[string]interface{})
 		adminInfo["use_channel"] = c.GetStringSlice("use_channel")
 		isMultiKey := common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey)
