@@ -176,12 +176,12 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	contentType := c.GetHeader("Content-Type")
 
 	if strings.HasPrefix(contentType, "application/json") {
-		var bodyMap map[string]interface{}
-		if err := common.Unmarshal(cachedBody, &bodyMap); err == nil {
-			bodyMap["model"] = info.UpstreamModelName
-			if newBody, err := common.Marshal(bodyMap); err == nil {
-				return bytes.NewReader(newBody), nil
-			}
+		newBody, ok, err := buildJSONTaskBody(cachedBody, info)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return bytes.NewReader(newBody), nil
 		}
 		return bytes.NewReader(cachedBody), nil
 	}
@@ -238,6 +238,27 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	}
 
 	return common.ReaderOnly(storage), nil
+}
+
+func buildJSONTaskBody(cachedBody []byte, info *relaycommon.RelayInfo) ([]byte, bool, error) {
+	var bodyMap map[string]interface{}
+	if err := common.Unmarshal(cachedBody, &bodyMap); err != nil {
+		return nil, false, nil
+	}
+	if info != nil && info.ChannelMeta != nil && strings.TrimSpace(info.UpstreamModelName) != "" {
+		bodyMap["model"] = info.UpstreamModelName
+	}
+	newBody, err := common.Marshal(bodyMap)
+	if err != nil {
+		return nil, true, err
+	}
+	if info != nil && info.ChannelMeta != nil && len(info.ParamOverride) > 0 {
+		newBody, err = relaycommon.ApplyParamOverrideWithRelayInfo(newBody, info)
+		if err != nil {
+			return nil, true, errors.Wrap(err, "apply_param_override_failed")
+		}
+	}
+	return newBody, true, nil
 }
 
 // DoRequest delegates to common helper.
