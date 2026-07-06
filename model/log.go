@@ -20,6 +20,119 @@ import (
 	"gorm.io/gorm"
 )
 
+const maxLoggedHeaderValueLength = 512
+
+func truncateLoggedHeaderValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= maxLoggedHeaderValueLength {
+		return value
+	}
+	return value[:maxLoggedHeaderValueLength] + "...(truncated)"
+}
+
+func firstRequestHeader(c *gin.Context, names ...string) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	for _, name := range names {
+		if value := truncateLoggedHeaderValue(c.GetHeader(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func buildClientDiagnostics(c *gin.Context) map[string]interface{} {
+	if c == nil || c.Request == nil {
+		return nil
+	}
+	clientInfo := map[string]interface{}{}
+	if ip := strings.TrimSpace(c.ClientIP()); ip != "" {
+		clientInfo["ip"] = ip
+	}
+	if method := strings.TrimSpace(c.Request.Method); method != "" {
+		clientInfo["method"] = method
+	}
+	if host := strings.TrimSpace(c.Request.Host); host != "" {
+		clientInfo["host"] = host
+	}
+	if c.Request.URL != nil {
+		if path := strings.TrimSpace(c.Request.URL.Path); path != "" {
+			clientInfo["path"] = path
+		}
+	}
+	if proto := strings.TrimSpace(c.Request.Proto); proto != "" {
+		clientInfo["proto"] = proto
+	}
+	if c.Request.ContentLength >= 0 {
+		clientInfo["content_length"] = c.Request.ContentLength
+	}
+	if value := firstRequestHeader(c, "User-Agent"); value != "" {
+		clientInfo["user_agent"] = value
+	}
+	if value := firstRequestHeader(c, "Content-Type"); value != "" {
+		clientInfo["content_type"] = value
+	}
+	if value := firstRequestHeader(c, "Accept"); value != "" {
+		clientInfo["accept"] = value
+	}
+	if value := firstRequestHeader(c, "Origin"); value != "" {
+		clientInfo["origin"] = value
+	}
+	if value := firstRequestHeader(c, "Referer"); value != "" {
+		clientInfo["referer"] = value
+	}
+	if value := firstRequestHeader(c, "X-Forwarded-For"); value != "" {
+		clientInfo["x_forwarded_for"] = value
+	}
+	if value := firstRequestHeader(c, "X-Real-IP"); value != "" {
+		clientInfo["x_real_ip"] = value
+	}
+	if value := firstRequestHeader(c, "CF-Connecting-IP"); value != "" {
+		clientInfo["cf_connecting_ip"] = value
+	}
+	if value := firstRequestHeader(c, "CF-IPCountry"); value != "" {
+		clientInfo["cf_ip_country"] = value
+	}
+	if value := firstRequestHeader(c, "CF-Ray"); value != "" {
+		clientInfo["cf_ray"] = value
+	}
+	if value := firstRequestHeader(c, "X-Request-Id", "X-Request-ID"); value != "" {
+		clientInfo["x_request_id"] = value
+	}
+	if value := firstRequestHeader(c, common.RequestIdKey); value != "" {
+		clientInfo["x_oneapi_request_id"] = value
+	}
+	clientHeaderFields := []struct {
+		key     string
+		headers []string
+	}{
+		{key: "uclaw_client", headers: []string{"X-UClaw-Client"}},
+		{key: "uclaw_version", headers: []string{"X-UClaw-Version"}},
+		{key: "uclaw_platform", headers: []string{"X-UClaw-Platform"}},
+		{key: "uclaw_arch", headers: []string{"X-UClaw-Arch"}},
+		{key: "uclaw_mode", headers: []string{"X-UClaw-Mode"}},
+		{key: "uclaw_provider", headers: []string{"X-UClaw-Provider"}},
+		{key: "uclaw_session_id", headers: []string{"X-UClaw-Session-Id"}},
+		{key: "clawx_client", headers: []string{"X-ClawX-Client"}},
+		{key: "clawx_version", headers: []string{"X-ClawX-Version"}},
+		{key: "clawx_platform", headers: []string{"X-ClawX-Platform"}},
+		{key: "clawx_arch", headers: []string{"X-ClawX-Arch"}},
+		{key: "clawx_mode", headers: []string{"X-ClawX-Mode"}},
+		{key: "clawx_provider", headers: []string{"X-ClawX-Provider"}},
+		{key: "clawx_session_id", headers: []string{"X-ClawX-Session-Id"}},
+	}
+	for _, field := range clientHeaderFields {
+		if value := firstRequestHeader(c, field.headers...); value != "" {
+			clientInfo[field.key] = value
+		}
+	}
+	if len(clientInfo) == 0 {
+		return nil
+	}
+	return clientInfo
+}
+
 func applyExplicitLogTextFilter(tx *gorm.DB, column string, value string) (*gorm.DB, error) {
 	if value == "" {
 		return tx, nil
@@ -238,6 +351,14 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
+	if other == nil {
+		other = make(map[string]interface{})
+	}
+	if _, exists := other["client_diagnostics"]; !exists {
+		if clientDiagnostics := buildClientDiagnostics(c); len(clientDiagnostics) > 0 {
+			other["client_diagnostics"] = clientDiagnostics
+		}
+	}
 	otherStr := common.MapToJsonStr(other)
 	// 判断是否需要记录 IP
 	needRecordIp := false

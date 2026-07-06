@@ -203,6 +203,41 @@ export interface LogOtherData {
   fee_quota?: number
   // Reject / intercept reason (admin)
   reject_reason?: string
+  // Client-side request diagnostics for abnormal/error logs (admin only).
+  client_diagnostics?: {
+    ip?: string
+    method?: string
+    host?: string
+    path?: string
+    proto?: string
+    content_length?: number
+    user_agent?: string
+    content_type?: string
+    accept?: string
+    origin?: string
+    referer?: string
+    x_forwarded_for?: string
+    x_real_ip?: string
+    cf_connecting_ip?: string
+    cf_ip_country?: string
+    cf_ray?: string
+    x_request_id?: string
+    x_oneapi_request_id?: string
+    uclaw_client?: string
+    uclaw_version?: string
+    uclaw_platform?: string
+    uclaw_arch?: string
+    uclaw_mode?: string
+    uclaw_provider?: string
+    uclaw_session_id?: string
+    clawx_client?: string
+    clawx_version?: string
+    clawx_platform?: string
+    clawx_arch?: string
+    clawx_mode?: string
+    clawx_provider?: string
+    clawx_session_id?: string
+  }
   // Task-related fields (for refund logs, type=6)
   is_task?: boolean
   task_id?: string

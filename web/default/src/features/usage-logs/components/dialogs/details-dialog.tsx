@@ -530,6 +530,139 @@ export function DetailsDialog(props: DetailsDialogProps) {
     (other?.request_path || conversionChain.length > 0)
 
   const useChannel = other?.admin_info?.use_channel
+  const clientDiagnostics = props.isAdmin ? other?.client_diagnostics : undefined
+  const clientDiagnosticRows = clientDiagnostics
+    ? ([
+        clientDiagnostics.ip && {
+          label: t('Client IP'),
+          value: clientDiagnostics.ip,
+        },
+        clientDiagnostics.method && {
+          label: t('Method'),
+          value: clientDiagnostics.method,
+        },
+        clientDiagnostics.host && {
+          label: t('Host'),
+          value: clientDiagnostics.host,
+        },
+        clientDiagnostics.path && {
+          label: t('Path'),
+          value: clientDiagnostics.path,
+        },
+        clientDiagnostics.proto && {
+          label: t('Protocol'),
+          value: clientDiagnostics.proto,
+        },
+        clientDiagnostics.content_length != null && {
+          label: t('Content Length'),
+          value: String(clientDiagnostics.content_length),
+        },
+        clientDiagnostics.user_agent && {
+          label: t('User Agent'),
+          value: clientDiagnostics.user_agent,
+        },
+        clientDiagnostics.content_type && {
+          label: 'Content-Type',
+          value: clientDiagnostics.content_type,
+        },
+        clientDiagnostics.accept && {
+          label: 'Accept',
+          value: clientDiagnostics.accept,
+        },
+        clientDiagnostics.origin && {
+          label: 'Origin',
+          value: clientDiagnostics.origin,
+        },
+        clientDiagnostics.referer && {
+          label: 'Referer',
+          value: clientDiagnostics.referer,
+        },
+        clientDiagnostics.x_forwarded_for && {
+          label: 'X-Forwarded-For',
+          value: clientDiagnostics.x_forwarded_for,
+        },
+        clientDiagnostics.x_real_ip && {
+          label: 'X-Real-IP',
+          value: clientDiagnostics.x_real_ip,
+        },
+        clientDiagnostics.cf_connecting_ip && {
+          label: 'CF-Connecting-IP',
+          value: clientDiagnostics.cf_connecting_ip,
+        },
+        clientDiagnostics.cf_ip_country && {
+          label: 'CF-IPCountry',
+          value: clientDiagnostics.cf_ip_country,
+        },
+        clientDiagnostics.cf_ray && {
+          label: 'CF-Ray',
+          value: clientDiagnostics.cf_ray,
+        },
+        clientDiagnostics.x_request_id && {
+          label: 'X-Request-ID',
+          value: clientDiagnostics.x_request_id,
+        },
+        clientDiagnostics.x_oneapi_request_id && {
+          label: 'X-Oneapi-Request-Id',
+          value: clientDiagnostics.x_oneapi_request_id,
+        },
+        clientDiagnostics.uclaw_client && {
+          label: 'X-UClaw-Client',
+          value: clientDiagnostics.uclaw_client,
+        },
+        clientDiagnostics.uclaw_version && {
+          label: 'X-UClaw-Version',
+          value: clientDiagnostics.uclaw_version,
+        },
+        clientDiagnostics.uclaw_platform && {
+          label: 'X-UClaw-Platform',
+          value: clientDiagnostics.uclaw_platform,
+        },
+        clientDiagnostics.uclaw_arch && {
+          label: 'X-UClaw-Arch',
+          value: clientDiagnostics.uclaw_arch,
+        },
+        clientDiagnostics.uclaw_mode && {
+          label: 'X-UClaw-Mode',
+          value: clientDiagnostics.uclaw_mode,
+        },
+        clientDiagnostics.uclaw_provider && {
+          label: 'X-UClaw-Provider',
+          value: clientDiagnostics.uclaw_provider,
+        },
+        clientDiagnostics.uclaw_session_id && {
+          label: 'X-UClaw-Session-Id',
+          value: clientDiagnostics.uclaw_session_id,
+        },
+        clientDiagnostics.clawx_client && {
+          label: 'X-ClawX-Client',
+          value: clientDiagnostics.clawx_client,
+        },
+        clientDiagnostics.clawx_version && {
+          label: 'X-ClawX-Version',
+          value: clientDiagnostics.clawx_version,
+        },
+        clientDiagnostics.clawx_platform && {
+          label: 'X-ClawX-Platform',
+          value: clientDiagnostics.clawx_platform,
+        },
+        clientDiagnostics.clawx_arch && {
+          label: 'X-ClawX-Arch',
+          value: clientDiagnostics.clawx_arch,
+        },
+        clientDiagnostics.clawx_mode && {
+          label: 'X-ClawX-Mode',
+          value: clientDiagnostics.clawx_mode,
+        },
+        clientDiagnostics.clawx_provider && {
+          label: 'X-ClawX-Provider',
+          value: clientDiagnostics.clawx_provider,
+        },
+        clientDiagnostics.clawx_session_id && {
+          label: 'X-ClawX-Session-Id',
+          value: clientDiagnostics.clawx_session_id,
+        },
+      ].filter(Boolean) as Array<{ label: React.ReactNode; value: string }>)
+    : []
   const channelChain =
     useChannel && useChannel.length > 0 ? useChannel.join(' → ') : undefined
 
@@ -694,6 +827,22 @@ export function DetailsDialog(props: DetailsDialogProps) {
               />
             )}
         </div>
+
+        {clientDiagnosticRows.length > 0 && (
+          <DetailSection
+            icon={<Monitor className='size-3.5' aria-hidden='true' />}
+            label={t('Client Diagnostics')}
+          >
+            {clientDiagnosticRows.map((row) => (
+              <DetailRow
+                key={String(row.label)}
+                label={row.label}
+                value={row.value}
+                mono
+              />
+            ))}
+          </DetailSection>
+        )}
 
         {/* Request conversion (admin only, not for refund) */}
         {showConversion && (
