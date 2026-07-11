@@ -816,8 +816,9 @@ func (t *TaskSubmitReq) HasImage() bool {
 func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 	type Alias TaskSubmitReq
 	aux := &struct {
-		Metadata json.RawMessage `json:"metadata,omitempty"`
-		Duration json.RawMessage `json:"duration,omitempty"`
+		Metadata       json.RawMessage `json:"metadata,omitempty"`
+		Duration       json.RawMessage `json:"duration,omitempty"`
+		InputReference json.RawMessage `json:"input_reference,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(t),
@@ -838,6 +839,24 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 					t.Duration = v
 				}
 			}
+		}
+	}
+
+	if len(aux.InputReference) > 0 && string(aux.InputReference) != "null" {
+		var inputReference string
+		if err := common.Unmarshal(aux.InputReference, &inputReference); err == nil {
+			t.InputReference = strings.TrimSpace(inputReference)
+		} else {
+			var inputReferenceObject struct {
+				ImageURL string `json:"image_url"`
+			}
+			if objectErr := common.Unmarshal(aux.InputReference, &inputReferenceObject); objectErr != nil {
+				return fmt.Errorf("input_reference must be a string or an object with image_url: %w", err)
+			}
+			if strings.TrimSpace(inputReferenceObject.ImageURL) == "" {
+				return fmt.Errorf("input_reference object requires a non-empty image_url")
+			}
+			t.InputReference = strings.TrimSpace(inputReferenceObject.ImageURL)
 		}
 	}
 

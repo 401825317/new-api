@@ -1,12 +1,46 @@
 package common
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/types"
 	"github.com/stretchr/testify/require"
 )
+
+func TestTaskSubmitReqUnmarshalInputReferenceString(t *testing.T) {
+	var req TaskSubmitReq
+	require.NoError(t, json.Unmarshal([]byte(`{
+  "prompt": "make a video",
+  "model": "grok-image-video",
+  "input_reference": "data:image/png;base64,AAAA"
+}`), &req))
+
+	require.Equal(t, "data:image/png;base64,AAAA", req.InputReference)
+}
+
+func TestTaskSubmitReqUnmarshalOpenClawInputReferenceObject(t *testing.T) {
+	var req TaskSubmitReq
+	require.NoError(t, json.Unmarshal([]byte(`{
+  "prompt": "make a video",
+  "model": "grok-image-video",
+  "input_reference": {"image_url":"data:image/png;base64,AAAA"}
+}`), &req))
+
+	require.Equal(t, "data:image/png;base64,AAAA", req.InputReference)
+}
+
+func TestTaskSubmitReqRejectsInvalidInputReferenceObject(t *testing.T) {
+	var req TaskSubmitReq
+	err := json.Unmarshal([]byte(`{
+  "prompt": "make a video",
+  "model": "grok-image-video",
+  "input_reference": {"url":"https://example.com/reference.png"}
+}`), &req)
+
+	require.EqualError(t, err, "input_reference object requires a non-empty image_url")
+}
 
 func TestRelayInfoGetFinalRequestRelayFormatPrefersExplicitFinal(t *testing.T) {
 	info := &RelayInfo{
