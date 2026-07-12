@@ -248,6 +248,9 @@ func buildJSONTaskBody(cachedBody []byte, info *relaycommon.RelayInfo) ([]byte, 
 	if info != nil && info.ChannelMeta != nil && strings.TrimSpace(info.UpstreamModelName) != "" {
 		bodyMap["model"] = info.UpstreamModelName
 	}
+	if info != nil && info.ChannelMeta != nil && len(info.ParamOverride) > 0 {
+		normalizeInputReferenceForParamOverride(bodyMap)
+	}
 	newBody, err := common.Marshal(bodyMap)
 	if err != nil {
 		return nil, true, err
@@ -259,6 +262,18 @@ func buildJSONTaskBody(cachedBody []byte, info *relaycommon.RelayInfo) ([]byte, 
 		}
 	}
 	return newBody, true, nil
+}
+
+func normalizeInputReferenceForParamOverride(bodyMap map[string]interface{}) {
+	inputReference, ok := bodyMap["input_reference"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	imageURL, ok := inputReference["image_url"].(string)
+	if !ok || strings.TrimSpace(imageURL) == "" {
+		return
+	}
+	bodyMap["input_reference"] = strings.TrimSpace(imageURL)
 }
 
 // DoRequest delegates to common helper.

@@ -140,6 +140,41 @@ func TestBuildJSONTaskBodyAppliesParamOverrideAfterModelMapping(t *testing.T) {
 	require.Equal(t, "data:image/jpeg;base64,abc", image["url"])
 }
 
+func TestBuildJSONTaskBodyNormalizesObjectInputReferenceBeforeParamOverride(t *testing.T) {
+	body, ok, err := buildJSONTaskBody([]byte(`{
+		"model": "grok-image-video",
+		"prompt": "animate",
+		"input_reference": {
+			"image_url": "data:image/png;base64,xyz"
+		}
+	}`), &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "grok-imagine-video-1.5",
+			ParamOverride: map[string]any{
+				"operations": []any{
+					map[string]any{
+						"mode": "move",
+						"from": "input_reference",
+						"to":   "image.url",
+					},
+				},
+			},
+		},
+	})
+
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.Equal(t, "grok-imagine-video-1.5", got["model"])
+	require.NotContains(t, got, "input_reference")
+
+	image, ok := got["image"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "data:image/png;base64,xyz", image["url"])
+}
+
 func TestBuildJSONTaskBodySkipsParamOverrideWhenJSONInvalid(t *testing.T) {
 	body, ok, err := buildJSONTaskBody([]byte(`not-json`), &relaycommon.RelayInfo{
 		ChannelMeta: &relaycommon.ChannelMeta{
