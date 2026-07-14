@@ -217,6 +217,14 @@ var (
 	CriticalRateLimitNum            = 20
 	CriticalRateLimitDuration int64 = 20 * 60
 
+	ClawXAPIRateLimitEnable   bool
+	ClawXAPIRateLimitNum            = 3600
+	ClawXAPIRateLimitDuration int64 = 3 * 60
+
+	ClawXAuthRateLimitEnable   bool
+	ClawXAuthRateLimitNum            = 200
+	ClawXAuthRateLimitDuration int64 = 20 * 60
+
 	UploadRateLimitNum            = 10
 	UploadRateLimitDuration int64 = 60
 

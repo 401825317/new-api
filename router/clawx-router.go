@@ -8,6 +8,7 @@ import (
 
 func SetClawXRouter(apiRouter *gin.RouterGroup, anonymousRequestBodyLimit gin.HandlerFunc) {
 	clawXRoute := apiRouter.Group("/clawx")
+	clawXRoute.Use(middleware.ClawXAPIRateLimit())
 	{
 		clawXRoute.GET("/bootstrap", controller.ClawXBootstrap)
 		clawXRoute.GET("/client-config", controller.ClawXClientConfig)
@@ -15,8 +16,8 @@ func SetClawXRouter(apiRouter *gin.RouterGroup, anonymousRequestBodyLimit gin.Ha
 		clawXRoute.POST("/activation/check", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ClawXActivationCheck)
 		clawXRoute.POST("/verification/send-code", middleware.EmailVerificationRateLimit(), anonymousRequestBodyLimit, controller.ClawXSendVerificationCode)
 		clawXRoute.POST("/register", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ClawXRegister)
-		clawXRoute.POST("/login", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ClawXLogin)
-		clawXRoute.POST("/auth/refresh", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ClawXRefresh)
+		clawXRoute.POST("/login", middleware.ClawXLoginRateLimit(), anonymousRequestBodyLimit, controller.ClawXLogin)
+		clawXRoute.POST("/auth/refresh", middleware.ClawXRefreshRateLimit(), anonymousRequestBodyLimit, controller.ClawXRefresh)
 		clawXRoute.POST("/auth/logout", anonymousRequestBodyLimit, controller.ClawXLogout)
 		clawXRoute.GET("/updates/latest", controller.ClawXUpdateLatest)
 		clawXRoute.GET("/updates/feed/:channel/*file", controller.ClawXUpdateFeed)
@@ -38,7 +39,7 @@ func SetClawXRouter(apiRouter *gin.RouterGroup, anonymousRequestBodyLimit gin.Ha
 		{
 			authRoute.POST("/auth/verify", controller.ClawXAuthVerify)
 			authRoute.POST("/auth/unregister-device", controller.ClawXUnregisterDevice)
-			authRoute.POST("/relay-token", middleware.CriticalRateLimit(), controller.ClawXRelayToken)
+			authRoute.POST("/relay-token", middleware.ClawXRelayTokenRateLimit(), controller.ClawXRelayToken)
 			authRoute.GET("/user/self", controller.ClawXUserSelf)
 
 			billingRoute := authRoute.Group("/billing")
@@ -52,8 +53,9 @@ func SetClawXRouter(apiRouter *gin.RouterGroup, anonymousRequestBodyLimit gin.Ha
 	}
 
 	compatAuthRoute := apiRouter.Group("/v1/auth")
+	compatAuthRoute.Use(middleware.ClawXAPIRateLimit())
 	{
-		compatAuthRoute.POST("/refresh", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ClawXRefresh)
+		compatAuthRoute.POST("/refresh", middleware.ClawXRefreshRateLimit(), anonymousRequestBodyLimit, controller.ClawXRefresh)
 		compatAuthRoute.POST("/logout", anonymousRequestBodyLimit, controller.ClawXLogout)
 		compatAuthRoute.GET("/me", middleware.ClawXAuth(), controller.ClawXUserSelf)
 	}

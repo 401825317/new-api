@@ -123,6 +123,14 @@ func InitEnv() {
 	CriticalRateLimitNum = GetEnvOrDefault("CRITICAL_RATE_LIMIT", 20)
 	CriticalRateLimitDuration = int64(GetEnvOrDefault("CRITICAL_RATE_LIMIT_DURATION", 20*60))
 
+	ClawXAPIRateLimitEnable = GetEnvOrDefaultBool("CLAWX_API_RATE_LIMIT_ENABLE", true)
+	ClawXAPIRateLimitNum = GetEnvOrDefault("CLAWX_API_RATE_LIMIT", 3600)
+	ClawXAPIRateLimitDuration = int64(GetEnvOrDefault("CLAWX_API_RATE_LIMIT_DURATION", 3*60))
+
+	ClawXAuthRateLimitEnable = GetEnvOrDefaultBool("CLAWX_AUTH_RATE_LIMIT_ENABLE", true)
+	ClawXAuthRateLimitNum = GetEnvOrDefault("CLAWX_AUTH_RATE_LIMIT", 200)
+	ClawXAuthRateLimitDuration = int64(GetEnvOrDefault("CLAWX_AUTH_RATE_LIMIT_DURATION", 20*60))
+
 	SearchRateLimitEnable = GetEnvOrDefaultBool("SEARCH_RATE_LIMIT_ENABLE", true)
 	SearchRateLimitNum = GetEnvOrDefault("SEARCH_RATE_LIMIT", 10)
 	SearchRateLimitDuration = int64(GetEnvOrDefault("SEARCH_RATE_LIMIT_DURATION", 60))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -96,7 +97,15 @@ func GlobalWebRateLimit() func(c *gin.Context) {
 
 func GlobalAPIRateLimit() func(c *gin.Context) {
 	if common.GlobalApiRateLimitEnable {
-		return rateLimitFactory(common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration, "GA")
+		limiter := rateLimitFactory(common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration, "GA")
+		return func(c *gin.Context) {
+			path := c.Request.URL.Path
+			if strings.HasPrefix(path, "/api/clawx/") || strings.HasPrefix(path, "/api/v1/auth/") {
+				c.Next()
+				return
+			}
+			limiter(c)
+		}
 	}
 	return defNext
 }
@@ -106,6 +115,32 @@ func CriticalRateLimit() func(c *gin.Context) {
 		return rateLimitFactory(common.CriticalRateLimitNum, common.CriticalRateLimitDuration, "CT")
 	}
 	return defNext
+}
+
+func ClawXAPIRateLimit() func(c *gin.Context) {
+	if common.ClawXAPIRateLimitEnable {
+		return rateLimitFactory(common.ClawXAPIRateLimitNum, common.ClawXAPIRateLimitDuration, "CXA")
+	}
+	return defNext
+}
+
+func clawXAuthRateLimit(mark string) func(c *gin.Context) {
+	if common.ClawXAuthRateLimitEnable {
+		return rateLimitFactory(common.ClawXAuthRateLimitNum, common.ClawXAuthRateLimitDuration, mark)
+	}
+	return defNext
+}
+
+func ClawXLoginRateLimit() func(c *gin.Context) {
+	return clawXAuthRateLimit("CXL")
+}
+
+func ClawXRefreshRateLimit() func(c *gin.Context) {
+	return clawXAuthRateLimit("CXR")
+}
+
+func ClawXRelayTokenRateLimit() func(c *gin.Context) {
+	return clawXAuthRateLimit("CXT")
 }
 
 func DownloadRateLimit() func(c *gin.Context) {
