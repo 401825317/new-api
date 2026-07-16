@@ -14,10 +14,9 @@ func SetVideoRouter(router *gin.Engine) {
 		grokProxyRouter.GET("/grok/:task_id", controller.GrokVideoProxy)
 	}
 
-	// Video proxy: accepts either session auth (dashboard) or token auth (API clients)
+	// Video proxy result URLs are returned to clients and used directly by preview players.
 	videoProxyRouter := router.Group("/v1")
 	videoProxyRouter.Use(middleware.RouteTag("relay"))
-	videoProxyRouter.Use(middleware.TokenOrUserAuth())
 	{
 		videoProxyRouter.GET("/videos/:task_id/content", controller.VideoProxy)
 	}
