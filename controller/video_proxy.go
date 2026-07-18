@@ -112,7 +112,7 @@ func VideoProxy(c *gin.Context) {
 				return
 			}
 		case constant.ChannelTypeOpenAI, constant.ChannelTypeSora:
-			resultURL := strings.TrimSpace(task.GetResultURL())
+			resultURL := taskcommon.ResolvedVideoResultURL(task)
 			if refreshedURL := usableRefreshedVideoResultURL(resultURL, task.TaskID); refreshedURL != "" {
 				videoURL = refreshedURL
 				if shouldAuthorizeUpstreamVideoURL(videoURL) {
@@ -124,7 +124,7 @@ func VideoProxy(c *gin.Context) {
 			}
 		default:
 			// Video URL is stored in PrivateData.ResultURL (fallback to FailReason for old data)
-			videoURL = task.GetResultURL()
+			videoURL = taskcommon.ResolvedVideoResultURL(task)
 		}
 	}
 
@@ -196,7 +196,7 @@ func usableRefreshedVideoResultURL(resultURL, taskID string) string {
 	resultURL = strings.TrimSpace(resultURL)
 	if resultURL == "" ||
 		taskcommon.SignedVideoProxyURLNeedsRefresh(resultURL, 0) ||
-		isTaskProxyContentURL(resultURL, taskID) {
+		taskcommon.IsTaskProxyContentURL(resultURL, taskID) {
 		return ""
 	}
 	return resultURL
@@ -233,7 +233,7 @@ func GrokVideoProxy(c *gin.Context) {
 		return
 	}
 
-	videoURL := strings.TrimSpace(task.GetResultURL())
+	videoURL := taskcommon.ResolvedVideoResultURL(task)
 	fetchSetting := system_setting.GetFetchSetting()
 	if err := common.ValidateURLWithFetchSetting(videoURL, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Grok video URL blocked for task %s: %v", taskID, err))

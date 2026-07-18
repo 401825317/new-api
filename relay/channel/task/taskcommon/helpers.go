@@ -148,11 +148,103 @@ func SignedVideoProxyURLExpiration(rawURL string) (int64, bool) {
 	return exp, true
 }
 
+func IsTaskProxyContentURL(rawURL, taskID string) bool {
+	rawURL = strings.TrimSpace(rawURL)
+	taskID = strings.TrimSpace(taskID)
+	if rawURL == "" || taskID == "" {
+		return false
+	}
+	return strings.Contains(rawURL, "/v1/videos/"+taskID+"/content")
+}
+
+func ResolvedVideoResultURL(task *model.Task) string {
+	if task == nil {
+		return ""
+	}
+	resultURL := strings.TrimSpace(task.GetResultURL())
+	if resultURL == "" || task.Status != model.TaskStatusSuccess || strings.HasPrefix(resultURL, "data:") {
+		return resultURL
+	}
+	if !IsTaskProxyContentURL(resultURL, task.TaskID) {
+		return resultURL
+	}
+	if extracted := ExtractVideoResultURL(task.Data, task.TaskID); extracted != "" {
+		return extracted
+	}
+	return resultURL
+}
+
+func ExtractVideoResultURL(data []byte, taskID string) string {
+	if len(data) == 0 {
+		return ""
+	}
+
+	var payload any
+	if err := common.Unmarshal(data, &payload); err != nil {
+		return ""
+	}
+	return findFirstVideoResultURL(payload, taskID)
+}
+
+func findFirstVideoResultURL(value any, taskID string) string {
+	switch v := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"result_url", "url", "video_url"} {
+			if raw, ok := v[key]; ok {
+				if rawURL, ok := raw.(string); ok && validVideoResultURL(rawURL, taskID) {
+					return strings.TrimSpace(rawURL)
+				}
+			}
+		}
+		for _, key := range []string{"metadata", "response", "data", "video", "output"} {
+			if child, ok := v[key]; ok {
+				if result := findFirstVideoResultURL(child, taskID); result != "" {
+					return result
+				}
+			}
+		}
+		for _, child := range v {
+			if result := findFirstVideoResultURL(child, taskID); result != "" {
+				return result
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if result := findFirstVideoResultURL(child, taskID); result != "" {
+				return result
+			}
+		}
+	case string:
+		if validVideoResultURL(v, taskID) {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func validVideoResultURL(rawURL, taskID string) bool {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" || strings.HasPrefix(rawURL, "data:") {
+		return false
+	}
+	if taskID != "" && IsTaskProxyContentURL(rawURL, taskID) {
+		return false
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	return true
+}
+
 func IsGrokVideoProxyCandidate(task *model.Task) bool {
 	if task == nil || task.Status != model.TaskStatusSuccess {
 		return false
 	}
-	return IsAllowedGrokVideoURL(task.GetResultURL())
+	return IsAllowedGrokVideoURL(ResolvedVideoResultURL(task))
 }
 
 func IsAllowedGrokVideoURL(rawURL string) bool {
@@ -194,7 +286,7 @@ func PublicResultURL(task *model.Task) string {
 	if task == nil {
 		return ""
 	}
-	resultURL := strings.TrimSpace(task.GetResultURL())
+	resultURL := ResolvedVideoResultURL(task)
 	if resultURL == "" || task.Status != model.TaskStatusSuccess || strings.HasPrefix(resultURL, "data:") {
 		return resultURL
 	}

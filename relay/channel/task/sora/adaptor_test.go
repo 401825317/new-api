@@ -71,6 +71,42 @@ func TestParseTaskResultCompletedWithResultURL(t *testing.T) {
 	require.Equal(t, "https://example.com/result.mp4", task.Url)
 }
 
+func TestParseTaskResultCompletedWithNestedResultURL(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+	task, err := adaptor.ParseTaskResult([]byte(`{
+		"id": "task_public",
+		"task_id": "task_public",
+		"status": "completed",
+		"result_url": "https://zz-cn.lingzhiwuxian.com/v1/videos/task_public/content",
+		"data": {
+			"video": {
+				"url": "https://example.com/result.mp4"
+			}
+		}
+	}`))
+
+	require.NoError(t, err)
+	require.Equal(t, string(model.TaskStatusSuccess), task.Status)
+	require.Equal(t, "https://example.com/result.mp4", task.Url)
+}
+
+func TestParseTaskResultCompletedWithNestedDataVideoURL(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+	task, err := adaptor.ParseTaskResult([]byte(`{
+		"id": "task_public",
+		"task_id": "task_public",
+		"status": "completed",
+		"result_url": "https://zz-cn.lingzhiwuxian.com/v1/videos/task_public/content",
+		"data": {
+			"video_url": "https://example.com/result.mp4"
+		}
+	}`))
+
+	require.NoError(t, err)
+	require.Equal(t, string(model.TaskStatusSuccess), task.Status)
+	require.Equal(t, "https://example.com/result.mp4", task.Url)
+}
+
 func TestParseTaskResultFailureReason(t *testing.T) {
 	adaptor := &TaskAdaptor{}
 	task, err := adaptor.ParseTaskResult([]byte(`{

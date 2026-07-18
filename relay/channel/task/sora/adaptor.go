@@ -334,6 +334,10 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	if err := common.Unmarshal(respBody, &resTask); err != nil {
 		return nil, errors.Wrap(err, "unmarshal task result failed")
 	}
+	taskID := strings.TrimSpace(resTask.TaskID)
+	if taskID == "" {
+		taskID = strings.TrimSpace(resTask.ID)
+	}
 
 	taskResult := relaycommon.TaskInfo{
 		Code: 0,
@@ -347,6 +351,11 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	case "completed", "succeeded", "success", "done":
 		taskResult.Status = model.TaskStatusSuccess
 		taskResult.Url = resTask.resultURL()
+		if taskResult.Url == "" || taskcommon.IsTaskProxyContentURL(taskResult.Url, taskID) {
+			if extracted := taskcommon.ExtractVideoResultURL(respBody, taskID); extracted != "" {
+				taskResult.Url = extracted
+			}
+		}
 	case "failed", "cancelled":
 		taskResult.Status = model.TaskStatusFailure
 		if resTask.Error != nil {

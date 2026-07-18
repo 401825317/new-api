@@ -471,6 +471,11 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 	if err != nil || ti == nil {
 		return nil
 	}
+	if taskID := strings.TrimSpace(task.TaskID); taskID != "" && (ti.Url == "" || taskcommon.IsTaskProxyContentURL(ti.Url, taskID)) {
+		if extracted := taskcommon.ExtractVideoResultURL(body, taskID); extracted != "" {
+			ti.Url = extracted
+		}
+	}
 
 	snap := task.Snapshot()
 
@@ -558,10 +563,10 @@ func mapTaskStatusToSimple(status model.TaskStatus) string {
 func publicTaskResultURL(task *model.Task) string {
 	wasExpiringSignedURL := false
 	if task != nil {
-		wasExpiringSignedURL = taskcommon.SignedVideoProxyURLNeedsRefresh(task.GetResultURL(), signedVideoProxyRefreshBefore)
+		wasExpiringSignedURL = taskcommon.SignedVideoProxyURLNeedsRefresh(taskcommon.ResolvedVideoResultURL(task), signedVideoProxyRefreshBefore)
 	}
 	refreshExpiringSignedVideoURL(task)
-	if task != nil && (wasExpiringSignedURL || taskcommon.SignedVideoProxyURLNeedsRefresh(task.GetResultURL(), 0)) {
+	if task != nil && (wasExpiringSignedURL || taskcommon.SignedVideoProxyURLNeedsRefresh(taskcommon.ResolvedVideoResultURL(task), 0)) {
 		return taskcommon.BuildProxyURL(task.TaskID)
 	}
 	return taskcommon.PublicResultURL(task)
@@ -575,7 +580,7 @@ func refreshExpiringSignedVideoURL(task *model.Task) {
 	if task == nil || task.Status != model.TaskStatusSuccess {
 		return
 	}
-	if !taskcommon.SignedVideoProxyURLNeedsRefresh(task.GetResultURL(), signedVideoProxyRefreshBefore) {
+	if !taskcommon.SignedVideoProxyURLNeedsRefresh(taskcommon.ResolvedVideoResultURL(task), signedVideoProxyRefreshBefore) {
 		return
 	}
 	refreshTaskFromUpstream(task)
@@ -636,6 +641,9 @@ func refreshTaskFromUpstream(task *model.Task) bool {
 	if len(data) > 0 {
 		task.Data = data
 	}
+	if resolved := taskcommon.ResolvedVideoResultURL(task); resolved != "" && !strings.HasPrefix(resolved, "data:") {
+		task.PrivateData.ResultURL = resolved
+	}
 	if snap.Equal(task.Snapshot()) {
 		return true
 	}
@@ -664,9 +672,15 @@ func parseRefreshedTask(body []byte, adaptor channel.TaskAdaptor) (*relaycommon.
 	var responseItems dto.TaskResponse[dto.TaskDto]
 	if err := common.Unmarshal(body, &responseItems); err == nil && responseItems.IsSuccess() {
 		t := responseItems.Data
+		taskID := strings.TrimSpace(t.TaskID)
 		resultURL := strings.TrimSpace(t.ResultURL)
 		if resultURL == "" {
 			resultURL = strings.TrimSpace(t.FailReason)
+		}
+		if resultURL == "" || taskcommon.IsTaskProxyContentURL(resultURL, taskID) {
+			if extracted := taskcommon.ExtractVideoResultURL(t.Data, taskID); extracted != "" {
+				resultURL = extracted
+			}
 		}
 		return &relaycommon.TaskInfo{
 			TaskID:   t.TaskID,

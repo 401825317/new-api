@@ -1,6 +1,7 @@
 package taskcommon
 
 import (
+	"encoding/json"
 	"net/url"
 	"strconv"
 	"testing"
@@ -39,6 +40,17 @@ func finishedVideoTask() *model.Task {
 	}
 }
 
+func finishedVideoTaskWithNestedDataURL() *model.Task {
+	return &model.Task{
+		TaskID: "task_public",
+		Status: model.TaskStatusSuccess,
+		PrivateData: model.TaskPrivateData{
+			ResultURL: "https://zz-cn.lingzhiwuxian.com/v1/videos/task_public/content",
+		},
+		Data: json.RawMessage(`{"metadata":{"url":"https://video.example.com/video.mp4"}}`),
+	}
+}
+
 func TestPublicResultURLProxyMode(t *testing.T) {
 	withVideoURLSettings(t, "https://zz-cn.lingzhiwuxian.com", "", "proxy")
 
@@ -59,6 +71,14 @@ func TestPublicResultURLDownstreamMode(t *testing.T) {
 	}
 }
 
+func TestResolvedVideoResultURLUsesTaskDataWhenStoredURLIsSelfProxy(t *testing.T) {
+	got := ResolvedVideoResultURL(finishedVideoTaskWithNestedDataURL())
+	want := "https://video.example.com/video.mp4"
+	if got != want {
+		t.Fatalf("ResolvedVideoResultURL() = %q, want %q", got, want)
+	}
+}
+
 func TestPublicResultURLDownstreamModeReturnsExpiredSignedURL(t *testing.T) {
 	withVideoURLSettings(t, "https://zz-cn.lingzhiwuxian.com", "", "downstream")
 	exp := time.Now().Add(-time.Minute).Unix()
@@ -70,6 +90,16 @@ func TestPublicResultURLDownstreamModeReturnsExpiredSignedURL(t *testing.T) {
 	}
 }
 
+func TestPublicResultURLDownstreamModeUsesTaskDataWhenStoredURLIsSelfProxy(t *testing.T) {
+	withVideoURLSettings(t, "https://zz-cn.lingzhiwuxian.com", "", "downstream")
+
+	got := PublicResultURL(finishedVideoTaskWithNestedDataURL())
+	want := "https://video.example.com/video.mp4"
+	if got != want {
+		t.Fatalf("PublicResultURL() = %q, want %q", got, want)
+	}
+}
+
 func TestPublicResultURLDownstreamModeBypassesSignedGrokProxy(t *testing.T) {
 	withVideoURLSettings(t, "https://zz-cn.lingzhiwuxian.com", "https://video.junfeiai.hk-proxy.lingzhiwuxian.com", "direct")
 	withVideoProxySignSecret(t, "secret")
@@ -78,6 +108,26 @@ func TestPublicResultURLDownstreamModeBypassesSignedGrokProxy(t *testing.T) {
 	got := PublicResultURL(grokVideoTask(rawURL))
 	if got != rawURL {
 		t.Fatalf("PublicResultURL() = %q, want raw upstream URL %q", got, rawURL)
+	}
+}
+
+func TestBuildGrokVideoProxyURLUsesTaskDataWhenStoredURLIsSelfProxy(t *testing.T) {
+	withVideoURLSettings(t, "https://video.junfeiai.com", "https://video.junfeiai.hk-proxy.lingzhiwuxian.com", "proxy")
+	withVideoProxySignSecret(t, "secret")
+
+	task := grokVideoTask("https://video.junfeiai.hk-proxy.lingzhiwuxian.com/v1/videos/task_grok/content")
+	task.Data = json.RawMessage(`{"url":"https://assets.x.ai/videos/task.mp4"}`)
+
+	got := BuildGrokVideoProxyURL(task)
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Scheme != "https" || parsed.Host != "video.junfeiai.hk-proxy.lingzhiwuxian.com" || parsed.Path != "/video/grok/task_grok" {
+		t.Fatalf("unexpected grok video proxy url: %q", got)
+	}
+	if !VerifyGrokVideoProxySignature("task_grok", parsed.Query().Get("exp"), parsed.Query().Get("sig")) {
+		t.Fatalf("generated signature should verify: %q", got)
 	}
 }
 
