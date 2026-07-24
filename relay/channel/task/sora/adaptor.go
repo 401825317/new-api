@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -62,6 +63,32 @@ type responseTask struct {
 	Error *taskError `json:"error,omitempty"`
 }
 
+type apimartSubmitResponse struct {
+	Code  int              `json:"code"`
+	Data  []apimartTask    `json:"data"`
+	Error *apimartAPIError `json:"error,omitempty"`
+}
+
+type apimartTask struct {
+	TaskID string `json:"task_id"`
+	Status string `json:"status"`
+}
+
+type apimartAPIError struct {
+	Code    any    `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+	Type    string `json:"type,omitempty"`
+}
+
+type apimartRequestPayload struct {
+	Model     string   `json:"model"`
+	Prompt    string   `json:"prompt"`
+	Size      string   `json:"size,omitempty"`
+	Duration  int      `json:"duration,omitempty"`
+	Quality   string   `json:"quality,omitempty"`
+	ImageURLs []string `json:"image_urls,omitempty"`
+}
+
 type taskError struct {
 	Message string `json:"message"`
 	Code    string `json:"code"`
@@ -112,7 +139,20 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	if info.Action == constant.TaskActionRemix {
 		return validateRemixRequest(c)
 	}
-	return relaycommon.ValidateMultipartDirect(c, info)
+	if taskErr := relaycommon.ValidateMultipartDirect(c, info); taskErr != nil {
+		return taskErr
+	}
+	if !isApimartRelay(info, info.OriginModelName) {
+		return nil
+	}
+	req, err := relaycommon.GetTaskRequest(c)
+	if err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	if _, err := buildApimartPayload(req, upstreamModelName(info)); err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	return nil
 }
 
 // EstimateBilling 根据用户请求的 seconds 和 size 计算 OtherRatios。
@@ -125,6 +165,20 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 	req, err := relaycommon.GetTaskRequest(c)
 	if err != nil {
 		return nil
+	}
+	if isApimartRelay(info, upstreamModelName(info)) {
+		payload, err := buildApimartPayload(req, upstreamModelName(info))
+		if err != nil {
+			return nil
+		}
+		ratios := map[string]float64{
+			"seconds": float64(payload.Duration),
+			"quality": 1,
+		}
+		if strings.ToLower(strings.TrimSpace(payload.Quality)) == "720p" {
+			ratios["quality"] = 1.5
+		}
+		return ratios
 	}
 
 	seconds, _ := strconv.Atoi(req.Seconds)
@@ -151,6 +205,12 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 }
 
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if isApimartRelay(info, upstreamModelName(info)) {
+		if info.Action == constant.TaskActionRemix {
+			return "", fmt.Errorf("apimart video does not support remix")
+		}
+		return fmt.Sprintf("%s/v1/videos/generations", strings.TrimRight(a.baseURL, "/")), nil
+	}
 	if info.Action == constant.TaskActionRemix {
 		return fmt.Sprintf("%s/v1/videos/%s/remix", a.baseURL, info.OriginTaskID), nil
 	}
@@ -160,11 +220,38 @@ func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, erro
 // BuildRequestHeader sets required headers.
 func (a *TaskAdaptor) BuildRequestHeader(c *gin.Context, req *http.Request, info *relaycommon.RelayInfo) error {
 	req.Header.Set("Authorization", "Bearer "+a.apiKey)
+	if isApimartRelay(info, upstreamModelName(info)) {
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		return nil
+	}
 	req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 	return nil
 }
 
 func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayInfo) (io.Reader, error) {
+	if isApimartRelay(info, upstreamModelName(info)) {
+		req, err := relaycommon.GetTaskRequest(c)
+		if err != nil {
+			return nil, err
+		}
+		payload, err := buildApimartPayload(req, upstreamModelName(info))
+		if err != nil {
+			return nil, err
+		}
+		data, err := common.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		if len(info.ParamOverride) > 0 {
+			data, err = relaycommon.ApplyParamOverrideWithRelayInfo(data, info)
+			if err != nil {
+				return nil, errors.Wrap(err, "apply_param_override_failed")
+			}
+		}
+		return bytes.NewReader(data), nil
+	}
+
 	storage, err := common.GetBodyStorage(c)
 	if err != nil {
 		return nil, errors.Wrap(err, "get_request_body_failed")
@@ -275,6 +362,10 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	}
 	_ = resp.Body.Close()
 
+	if isApimartRelay(info, upstreamModelName(info)) {
+		return a.doApimartResponse(c, responseBody, info)
+	}
+
 	// Parse Sora response
 	var dResp responseTask
 	if err := common.Unmarshal(responseBody, &dResp); err != nil {
@@ -306,6 +397,9 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 	}
 
 	uri := fmt.Sprintf("%s/v1/videos/%s", baseUrl, taskID)
+	if isApimartBaseURL(baseUrl) || isApimartModel(stringFromTaskBody(body, "upstream_model_name")) || isApimartModel(stringFromTaskBody(body, "model")) {
+		uri = fmt.Sprintf("%s/v1/tasks/%s?language=zh", strings.TrimRight(baseUrl, "/"), url.PathEscape(taskID))
+	}
 
 	req, err := http.NewRequest(http.MethodGet, uri, nil)
 	if err != nil {
@@ -317,6 +411,9 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 	client, err := service.GetHttpClientWithProxy(proxy)
 	if err != nil {
 		return nil, fmt.Errorf("new proxy http client failed: %w", err)
+	}
+	if client == nil {
+		client = http.DefaultClient
 	}
 	return client.Do(req)
 }
@@ -330,6 +427,10 @@ func (a *TaskAdaptor) GetChannelName() string {
 }
 
 func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
+	if taskInfo, ok, err := parseApimartTaskResult(respBody); ok || err != nil {
+		return taskInfo, err
+	}
+
 	resTask := responseTask{}
 	if err := common.Unmarshal(respBody, &resTask); err != nil {
 		return nil, errors.Wrap(err, "unmarshal task result failed")
@@ -395,6 +496,16 @@ func (r responseTask) resultURL() string {
 }
 
 func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
+	if isApimartModel(task.Properties.UpstreamModelName) || looksLikeApimartTaskData(task.Data) {
+		openAIVideo := task.ToOpenAIVideo()
+		if task.Status == model.TaskStatusFailure {
+			openAIVideo.Error = &dto.OpenAIVideoError{
+				Message: taskcommon.DefaultString(task.FailReason, "task failed"),
+			}
+		}
+		return common.Marshal(openAIVideo)
+	}
+
 	data := task.Data
 	var err error
 	if data, err = sjson.SetBytes(data, "id", task.TaskID); err != nil {
@@ -404,4 +515,281 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 		return nil, errors.Wrap(err, "set task_id failed")
 	}
 	return data, nil
+}
+
+func (a *TaskAdaptor) doApimartResponse(c *gin.Context, responseBody []byte, info *relaycommon.RelayInfo) (taskID string, taskData []byte, taskErr *dto.TaskError) {
+	var apiResp apimartSubmitResponse
+	if err := common.Unmarshal(responseBody, &apiResp); err != nil {
+		taskErr = service.TaskErrorWrapper(errors.Wrapf(err, "body: %s", responseBody), "unmarshal_response_body_failed", http.StatusInternalServerError)
+		return
+	}
+	if apiResp.Error != nil && strings.TrimSpace(apiResp.Error.Message) != "" {
+		taskErr = service.TaskErrorWrapperLocal(fmt.Errorf("%s", apiResp.Error.Message), "task_failed", http.StatusBadRequest)
+		return
+	}
+	if apiResp.Code != 0 && apiResp.Code != http.StatusOK {
+		taskErr = service.TaskErrorWrapperLocal(fmt.Errorf("apimart api error code: %d", apiResp.Code), "task_failed", http.StatusBadRequest)
+		return
+	}
+	if len(apiResp.Data) == 0 || strings.TrimSpace(apiResp.Data[0].TaskID) == "" {
+		taskErr = service.TaskErrorWrapper(fmt.Errorf("task_id is empty"), "invalid_response", http.StatusInternalServerError)
+		return
+	}
+
+	ov := dto.NewOpenAIVideo()
+	ov.ID = info.PublicTaskID
+	ov.TaskID = info.PublicTaskID
+	ov.CreatedAt = 0
+	ov.Model = info.OriginModelName
+	taskcommon.SetTaskSubmitResponse(c, http.StatusOK, ov)
+	return strings.TrimSpace(apiResp.Data[0].TaskID), responseBody, nil
+}
+
+func parseApimartTaskResult(respBody []byte) (*relaycommon.TaskInfo, bool, error) {
+	var root map[string]any
+	if err := common.Unmarshal(respBody, &root); err != nil {
+		return nil, false, nil
+	}
+	if errObj := objectValue(root["error"]); errObj != nil {
+		return &relaycommon.TaskInfo{
+			Code:   intValue(root["code"]),
+			Status: model.TaskStatusFailure,
+			Reason: apimartErrorMessage(errObj, "task failed"),
+		}, true, nil
+	}
+	data := objectValue(root["data"])
+	if data == nil {
+		return nil, false, nil
+	}
+	status := strings.ToLower(strings.TrimSpace(stringValue(data["status"])))
+	if status == "" {
+		return nil, false, nil
+	}
+
+	taskInfo := &relaycommon.TaskInfo{
+		Code:   intValue(root["code"]),
+		TaskID: stringValue(data["id"]),
+	}
+	switch status {
+	case "pending":
+		taskInfo.Status = model.TaskStatusQueued
+		taskInfo.Progress = apimartProgress(data["progress"], taskcommon.ProgressQueued)
+	case "submitted":
+		taskInfo.Status = model.TaskStatusSubmitted
+		taskInfo.Progress = apimartProgress(data["progress"], taskcommon.ProgressSubmitted)
+	case "processing", "running":
+		taskInfo.Status = model.TaskStatusInProgress
+		taskInfo.Progress = apimartProgress(data["progress"], taskcommon.ProgressInProgress)
+	case "completed", "succeeded", "success", "done":
+		taskInfo.Status = model.TaskStatusSuccess
+		taskInfo.Progress = taskcommon.ProgressComplete
+		taskInfo.Url = taskcommon.ExtractVideoResultURL(respBody, taskInfo.TaskID)
+	case "failed", "cancelled", "canceled":
+		taskInfo.Status = model.TaskStatusFailure
+		taskInfo.Progress = taskcommon.ProgressComplete
+		if errObj := objectValue(data["error"]); errObj != nil {
+			taskInfo.Reason = apimartErrorMessage(errObj, "task failed")
+		} else if message := stringValue(data["message"]); message != "" {
+			taskInfo.Reason = message
+		} else {
+			taskInfo.Reason = "task failed"
+		}
+	default:
+		return nil, true, fmt.Errorf("unknown apimart task status: %s", status)
+	}
+	return taskInfo, true, nil
+}
+
+func buildApimartPayload(req relaycommon.TaskSubmitReq, modelName string) (*apimartRequestPayload, error) {
+	duration, err := apimartDuration(req)
+	if err != nil {
+		return nil, err
+	}
+	payload := &apimartRequestPayload{
+		Model:     strings.TrimSpace(modelName),
+		Prompt:    req.Prompt,
+		Size:      apimartSize(req.Size),
+		Duration:  duration,
+		Quality:   taskcommon.DefaultString(strings.TrimSpace(req.Quality), "480p"),
+		ImageURLs: apimartImageURLs(req),
+	}
+	if err := taskcommon.UnmarshalMetadata(req.Metadata, payload); err != nil {
+		return nil, err
+	}
+	payload.Model = strings.TrimSpace(modelName)
+	if payload.Model == "" {
+		payload.Model = "grok-imagine-1.5-video-apimart"
+	}
+	if payload.Size == "" {
+		payload.Size = "16:9"
+	}
+	if payload.Quality == "" {
+		payload.Quality = "480p"
+	}
+	if payload.Duration < 6 || payload.Duration > 30 {
+		return nil, fmt.Errorf("duration must be between 6 and 30 seconds")
+	}
+	if len(payload.ImageURLs) > 7 {
+		return nil, fmt.Errorf("image_urls supports at most 7 images")
+	}
+	return payload, nil
+}
+
+func apimartDuration(req relaycommon.TaskSubmitReq) (int, error) {
+	if req.Duration != 0 {
+		return req.Duration, nil
+	}
+	if strings.TrimSpace(req.Seconds) == "" {
+		return 6, nil
+	}
+	duration, err := strconv.Atoi(strings.TrimSpace(req.Seconds))
+	if err != nil {
+		return 0, err
+	}
+	return duration, nil
+}
+
+func apimartSize(size string) string {
+	switch strings.TrimSpace(size) {
+	case "1280x720", "1792x1024":
+		return "16:9"
+	case "720x1280", "1024x1792":
+		return "9:16"
+	case "1024x1024":
+		return "1:1"
+	default:
+		if strings.TrimSpace(size) == "" {
+			return "16:9"
+		}
+		return strings.TrimSpace(size)
+	}
+}
+
+func apimartImageURLs(req relaycommon.TaskSubmitReq) []string {
+	candidates := append([]string{}, req.ImageURLs...)
+	candidates = append(candidates, req.Images...)
+	candidates = append(candidates, req.Image, req.InputReference)
+	seen := map[string]bool{}
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func isApimartRelay(info *relaycommon.RelayInfo, modelName string) bool {
+	if info != nil && info.ChannelMeta != nil && isApimartBaseURL(info.ChannelBaseUrl) {
+		return true
+	}
+	return isApimartModel(modelName)
+}
+
+func isApimartBaseURL(baseURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "api.apimart.ai"
+}
+
+func isApimartModel(modelName string) bool {
+	switch strings.TrimSpace(modelName) {
+	case "grok-imagine-1.5-video-apimart", "grok-imagine-1.5-video-ext":
+		return true
+	default:
+		return false
+	}
+}
+
+func upstreamModelName(info *relaycommon.RelayInfo) string {
+	if info == nil {
+		return ""
+	}
+	if info.ChannelMeta != nil && strings.TrimSpace(info.UpstreamModelName) != "" {
+		return info.UpstreamModelName
+	}
+	return info.OriginModelName
+}
+
+func stringFromTaskBody(body map[string]any, key string) string {
+	if body == nil {
+		return ""
+	}
+	if value, ok := body[key].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+func looksLikeApimartTaskData(data []byte) bool {
+	var root map[string]any
+	if err := common.Unmarshal(data, &root); err != nil {
+		return false
+	}
+	if _, ok := root["code"]; !ok {
+		return false
+	}
+	if dataObj := objectValue(root["data"]); dataObj != nil {
+		_, hasStatus := dataObj["status"]
+		_, hasResult := dataObj["result"]
+		return hasStatus || hasResult
+	}
+	if dataItems, ok := root["data"].([]any); ok && len(dataItems) > 0 {
+		if first := objectValue(dataItems[0]); first != nil {
+			_, hasTaskID := first["task_id"]
+			return hasTaskID
+		}
+	}
+	return false
+}
+
+func objectValue(value any) map[string]any {
+	if obj, ok := value.(map[string]any); ok {
+		return obj
+	}
+	return nil
+}
+
+func stringValue(value any) string {
+	if s, ok := value.(string); ok {
+		return strings.TrimSpace(s)
+	}
+	return ""
+}
+
+func intValue(value any) int {
+	switch v := value.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case string:
+		n, _ := strconv.Atoi(strings.TrimSpace(v))
+		return n
+	default:
+		return 0
+	}
+}
+
+func apimartErrorMessage(errObj map[string]any, fallback string) string {
+	if message := stringValue(errObj["message"]); message != "" {
+		return message
+	}
+	if typ := stringValue(errObj["type"]); typ != "" {
+		return typ
+	}
+	return fallback
+}
+
+func apimartProgress(value any, fallback string) string {
+	if n := intValue(value); n > 0 {
+		return fmt.Sprintf("%d%%", n)
+	}
+	return fallback
 }

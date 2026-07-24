@@ -2,10 +2,16 @@ package sora
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -105,6 +111,141 @@ func TestParseTaskResultCompletedWithNestedDataVideoURL(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, string(model.TaskStatusSuccess), task.Status)
 	require.Equal(t, "https://example.com/result.mp4", task.Url)
+}
+
+func TestBuildRequestURLUsesApimartGenerationEndpoint(t *testing.T) {
+	adaptor := &TaskAdaptor{baseURL: "https://api.apimart.ai"}
+	got, err := adaptor.BuildRequestURL(&relaycommon.RelayInfo{
+		TaskRelayInfo: &relaycommon.TaskRelayInfo{},
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelBaseUrl: "https://api.apimart.ai",
+		},
+		OriginModelName: "grok-image-video",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "https://api.apimart.ai/v1/videos/generations", got)
+}
+
+func TestBuildApimartPayloadNormalizesOpenAIVideoFields(t *testing.T) {
+	payload, err := buildApimartPayload(relaycommon.TaskSubmitReq{
+		Prompt:         "animate it",
+		Size:           "1280x720",
+		Seconds:        "10",
+		Quality:        "720p",
+		ImageURLs:      []string{"https://example.com/a.png"},
+		Image:          "https://example.com/a.png",
+		InputReference: "https://example.com/b.png",
+	}, "grok-imagine-1.5-video-apimart")
+
+	require.NoError(t, err)
+	require.Equal(t, "grok-imagine-1.5-video-apimart", payload.Model)
+	require.Equal(t, "animate it", payload.Prompt)
+	require.Equal(t, "16:9", payload.Size)
+	require.Equal(t, 10, payload.Duration)
+	require.Equal(t, "720p", payload.Quality)
+	require.Equal(t, []string{"https://example.com/a.png", "https://example.com/b.png"}, payload.ImageURLs)
+}
+
+func TestBuildApimartPayloadMetadataCannotOverrideModel(t *testing.T) {
+	payload, err := buildApimartPayload(relaycommon.TaskSubmitReq{
+		Prompt: "animate it",
+		Metadata: map[string]any{
+			"model":    "wrong-model",
+			"quality":  "720p",
+			"duration": 12,
+		},
+	}, "grok-imagine-1.5-video-ext")
+
+	require.NoError(t, err)
+	require.Equal(t, "grok-imagine-1.5-video-ext", payload.Model)
+	require.Equal(t, "720p", payload.Quality)
+	require.Equal(t, 12, payload.Duration)
+}
+
+func TestDoResponseParsesApimartArrayTaskIDAndReturnsPublicTaskID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(`{"code":200,"data":[{"task_id":"task_upstream","status":"submitted"}]}`)),
+	}
+
+	taskID, taskData, taskErr := (&TaskAdaptor{}).DoResponse(context, resp, &relaycommon.RelayInfo{
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+		OriginModelName: "grok-image-video",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelBaseUrl:    "https://api.apimart.ai",
+			UpstreamModelName: "grok-imagine-1.5-video-apimart",
+		},
+	})
+
+	require.Nil(t, taskErr)
+	require.Equal(t, "task_upstream", taskID)
+	require.JSONEq(t, `{"code":200,"data":[{"task_id":"task_upstream","status":"submitted"}]}`, string(taskData))
+	status, body, ok := taskcommon.GetTaskSubmitResponse(context)
+	require.True(t, ok)
+	require.Equal(t, http.StatusOK, status)
+	data, err := json.Marshal(body)
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"id":"task_public"`)
+	require.Contains(t, string(data), `"task_id":"task_public"`)
+	require.Contains(t, string(data), `"model":"grok-image-video"`)
+}
+
+func TestFetchTaskUsesApimartStatusEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/tasks/task_upstream", r.URL.Path)
+		require.Equal(t, "zh", r.URL.Query().Get("language"))
+		require.Equal(t, "Bearer sk-test", r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"code":200,"data":{"id":"task_upstream","status":"pending"}}`))
+	}))
+	defer server.Close()
+
+	resp, err := (&TaskAdaptor{}).FetchTask(server.URL, "sk-test", map[string]any{
+		"task_id":             "task_upstream",
+		"upstream_model_name": "grok-imagine-1.5-video-apimart",
+	}, "")
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.NoError(t, resp.Body.Close())
+}
+
+func TestParseTaskResultApimartCompletedWithVideosURLArray(t *testing.T) {
+	task, err := (&TaskAdaptor{}).ParseTaskResult([]byte(`{
+		"code": 200,
+		"data": {
+			"id": "task_upstream",
+			"status": "completed",
+			"progress": 100,
+			"result": {
+				"videos": [
+					{"url": ["https://upload.apimart.ai/f/video/result.mp4"]}
+				]
+			}
+		}
+	}`))
+
+	require.NoError(t, err)
+	require.Equal(t, string(model.TaskStatusSuccess), task.Status)
+	require.Equal(t, "100%", task.Progress)
+	require.Equal(t, "https://upload.apimart.ai/f/video/result.mp4", task.Url)
+}
+
+func TestParseTaskResultApimartFailureReason(t *testing.T) {
+	task, err := (&TaskAdaptor{}).ParseTaskResult([]byte(`{
+		"code": 200,
+		"data": {
+			"id": "task_upstream",
+			"status": "failed",
+			"error": {"message": "content rejected"}
+		}
+	}`))
+
+	require.NoError(t, err)
+	require.Equal(t, string(model.TaskStatusFailure), task.Status)
+	require.Equal(t, "content rejected", task.Reason)
 }
 
 func TestParseTaskResultFailureReason(t *testing.T) {

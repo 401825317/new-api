@@ -106,15 +106,22 @@ func validateMultipartTaskRequest(c *gin.Context, info *RelayInfo, action string
 
 	formData := c.Request.PostForm
 	req = TaskSubmitReq{
-		Prompt:   formData.Get("prompt"),
-		Model:    formData.Get("model"),
-		Mode:     formData.Get("mode"),
-		Image:    formData.Get("image"),
-		Size:     formData.Get("size"),
-		Metadata: make(map[string]interface{}),
+		Prompt:    formData.Get("prompt"),
+		Model:     formData.Get("model"),
+		Mode:      formData.Get("mode"),
+		Image:     formData.Get("image"),
+		ImageURLs: formData["image_urls"],
+		Size:      formData.Get("size"),
+		Quality:   formData.Get("quality"),
+		Metadata:  make(map[string]interface{}),
 	}
 
 	if durationStr := formData.Get("seconds"); durationStr != "" {
+		if duration, err := strconv.Atoi(durationStr); err == nil {
+			req.Duration = duration
+		}
+	}
+	if durationStr := formData.Get("duration"); durationStr != "" {
 		if duration, err := strconv.Atoi(durationStr); err == nil {
 			req.Duration = duration
 		}
@@ -212,8 +219,11 @@ func isKnownTaskField(field string) bool {
 		"mode":            true,
 		"image":           true,
 		"images":          true,
+		"image_urls":      true,
 		"size":            true,
 		"duration":        true,
+		"seconds":         true,
+		"quality":         true,
 		"input_reference": true, // Sora 特有字段
 	}
 	return knownFields[field]
@@ -245,6 +255,9 @@ func ValidateBasicTaskRequest(c *gin.Context, info *RelayInfo, action string) *d
 	if len(req.Images) == 0 && strings.TrimSpace(req.Image) != "" {
 		// 兼容单图上传
 		req.Images = []string{req.Image}
+	}
+	if len(req.Images) == 0 && len(req.ImageURLs) > 0 {
+		req.Images = req.ImageURLs
 	}
 
 	storeTaskRequest(c, info, action, req)

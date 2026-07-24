@@ -360,8 +360,9 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		key = privateData.Key
 	}
 	resp, err := adaptor.FetchTask(baseURL, key, map[string]any{
-		"task_id": task.GetUpstreamTaskID(),
-		"action":  task.Action,
+		"task_id":             task.GetUpstreamTaskID(),
+		"action":              task.Action,
+		"upstream_model_name": task.Properties.UpstreamModelName,
 	}, proxy)
 	if err != nil {
 		return fmt.Errorf("fetchTask failed for task %s: %w", taskId, err)

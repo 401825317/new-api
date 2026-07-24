@@ -604,8 +604,9 @@ func refreshTaskFromUpstream(task *model.Task) bool {
 	}
 	key := taskRefreshChannelKey(channelModel, task)
 	resp, err := adaptor.FetchTask(baseURL, key, map[string]any{
-		"task_id": task.GetUpstreamTaskID(),
-		"action":  task.Action,
+		"task_id":             task.GetUpstreamTaskID(),
+		"action":              task.Action,
+		"upstream_model_name": task.Properties.UpstreamModelName,
 	}, channelModel.GetSetting().Proxy)
 	if err != nil || resp == nil {
 		return false
