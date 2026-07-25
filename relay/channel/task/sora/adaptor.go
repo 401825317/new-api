@@ -2,6 +2,8 @@ package sora
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,8 +11,10 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -89,6 +93,29 @@ type apimartRequestPayload struct {
 	ImageURLs []string `json:"image_urls,omitempty"`
 }
 
+const (
+	apimartBase64ImageChannelIDsEnv = "APIMART_BASE64_IMAGE_CHANNEL_IDS"
+	apimartInputMediaUploadURLEnv   = "APIMART_INPUT_MEDIA_UPLOAD_URL"
+
+	apimartInputMediaMaxBytes      = 20 * 1024 * 1024
+	apimartInputMediaUploadTimeout = 15 * time.Second
+	apimartRequestBodyContextKey   = "apimart_prepared_request_body"
+)
+
+type apimartInputMediaUploadConfig struct {
+	url string
+}
+
+type apimartInlineImage struct {
+	data     []byte
+	mimeType string
+}
+
+type apimartPreparedRequestBody struct {
+	channelID int
+	body      []byte
+}
+
 type taskError struct {
 	Message string `json:"message"`
 	Code    string `json:"code"`
@@ -142,14 +169,18 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	if taskErr := relaycommon.ValidateMultipartDirect(c, info); taskErr != nil {
 		return taskErr
 	}
-	if !isApimartRelay(info, info.OriginModelName) {
+	if !isApimartRelay(info, info.OriginModelName) && !isApimartRelay(info, upstreamModelName(info)) {
 		return nil
 	}
 	req, err := relaycommon.GetTaskRequest(c)
 	if err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
 	}
-	if _, err := buildApimartPayload(req, upstreamModelName(info)); err != nil {
+	payload, err := buildApimartPayload(req, upstreamModelName(info))
+	if err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	if err := validateApimartBase64ImageInputs(payload.ImageURLs, info.ChannelId); err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
 	}
 	return nil
@@ -231,6 +262,10 @@ func (a *TaskAdaptor) BuildRequestHeader(c *gin.Context, req *http.Request, info
 
 func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayInfo) (io.Reader, error) {
 	if isApimartRelay(info, upstreamModelName(info)) {
+		if cachedBody, ok := getCachedApimartRequestBody(c, info.ChannelId); ok {
+			return bytes.NewReader(cachedBody), nil
+		}
+
 		req, err := relaycommon.GetTaskRequest(c)
 		if err != nil {
 			return nil, err
@@ -248,6 +283,24 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 			if err != nil {
 				return nil, errors.Wrap(err, "apply_param_override_failed")
 			}
+		}
+		imageURLs, err := apimartPayloadImageURLs(data)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateApimartBase64ImageInputs(imageURLs, info.ChannelId); err != nil {
+			return nil, err
+		}
+		imageURLs, uploaded, err := replaceApimartInlineImages(c.Request.Context(), imageURLs, info.ChannelId)
+		if err != nil {
+			return nil, err
+		}
+		if uploaded {
+			data, err = sjson.SetBytes(data, "image_urls", imageURLs)
+			if err != nil {
+				return nil, errors.Wrap(err, "set_apimart_image_urls_failed")
+			}
+			cacheApimartRequestBody(c, info.ChannelId, data)
 		}
 		return bytes.NewReader(data), nil
 	}
@@ -680,6 +733,263 @@ func apimartImageURLs(req relaycommon.TaskSubmitReq) []string {
 		out = append(out, candidate)
 	}
 	return out
+}
+
+func apimartPayloadImageURLs(data []byte) ([]string, error) {
+	var payload struct {
+		ImageURLs []string `json:"image_urls,omitempty"`
+	}
+	if err := common.Unmarshal(data, &payload); err != nil {
+		return nil, fmt.Errorf("invalid APIMart image_urls")
+	}
+	return payload.ImageURLs, nil
+}
+
+// validateApimartBase64ImageInputs intentionally only validates local input and
+// configuration. Uploading is deferred to BuildRequestBody, after pre-consume.
+func validateApimartBase64ImageInputs(imageURLs []string, channelID int) error {
+	if len(imageURLs) > 7 {
+		return fmt.Errorf("image_urls supports at most 7 images")
+	}
+	hasInlineImage := false
+	for _, imageURL := range imageURLs {
+		inlineImage, err := parseApimartInlineImage(imageURL)
+		if err != nil {
+			return err
+		}
+		if inlineImage != nil {
+			hasInlineImage = true
+		}
+	}
+	if !hasInlineImage {
+		return nil
+	}
+	_, err := apimartInputMediaUploadConfigForChannel(channelID)
+	return err
+}
+
+func replaceApimartInlineImages(ctx context.Context, imageURLs []string, channelID int) ([]string, bool, error) {
+	converted := append([]string(nil), imageURLs...)
+	var config apimartInputMediaUploadConfig
+	configLoaded := false
+	uploaded := false
+
+	for index, imageURL := range converted {
+		inlineImage, err := parseApimartInlineImage(imageURL)
+		if err != nil {
+			return nil, false, err
+		}
+		if inlineImage == nil {
+			continue
+		}
+		if !configLoaded {
+			config, err = apimartInputMediaUploadConfigForChannel(channelID)
+			if err != nil {
+				return nil, false, err
+			}
+			configLoaded = true
+		}
+		publicURL, err := uploadApimartInputMedia(ctx, config, inlineImage)
+		if err != nil {
+			return nil, false, err
+		}
+		converted[index] = publicURL
+		uploaded = true
+	}
+
+	return converted, uploaded, nil
+}
+
+func parseApimartInlineImage(value string) (*apimartInlineImage, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || isApimartHTTPURL(value) {
+		return nil, nil
+	}
+	if strings.HasPrefix(strings.ToLower(value), "data:") {
+		return parseApimartDataImage(value)
+	}
+	return parseApimartRawBase64Image(value)
+}
+
+func parseApimartDataImage(value string) (*apimartInlineImage, error) {
+	commaIndex := strings.Index(value, ",")
+	if commaIndex < 0 {
+		return nil, fmt.Errorf("APIMart input image must be a valid base64 data URL")
+	}
+	metadata := value[len("data:"):commaIndex]
+	parts := strings.Split(metadata, ";")
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("APIMart input image must be a valid base64 data URL")
+	}
+	mimeType := strings.ToLower(strings.TrimSpace(parts[0]))
+	if !isApimartSupportedImageMIME(mimeType) {
+		return nil, fmt.Errorf("APIMart supports only PNG, JPEG, or WebP input images")
+	}
+	hasBase64Encoding := false
+	for _, part := range parts[1:] {
+		if strings.EqualFold(strings.TrimSpace(part), "base64") {
+			hasBase64Encoding = true
+			break
+		}
+	}
+	if !hasBase64Encoding {
+		return nil, fmt.Errorf("APIMart input image must be a base64 data URL")
+	}
+	return decodeApimartBase64Image(value[commaIndex+1:], true)
+}
+
+func parseApimartRawBase64Image(value string) (*apimartInlineImage, error) {
+	return decodeApimartBase64Image(value, false)
+}
+
+func decodeApimartBase64Image(encoded string, strict bool) (*apimartInlineImage, error) {
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		if strict {
+			return nil, fmt.Errorf("APIMart input image must be a valid base64-encoded image")
+		}
+		return nil, nil
+	}
+	if len(encoded) > base64.StdEncoding.EncodedLen(apimartInputMediaMaxBytes) {
+		return nil, fmt.Errorf("APIMart input image exceeds the 20 MiB limit")
+	}
+
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		data, err = base64.RawStdEncoding.DecodeString(encoded)
+	}
+	if err != nil {
+		data, err = base64.URLEncoding.DecodeString(encoded)
+	}
+	if err != nil {
+		data, err = base64.RawURLEncoding.DecodeString(encoded)
+	}
+	if err != nil {
+		if strict {
+			return nil, fmt.Errorf("APIMart input image must be a valid base64-encoded image")
+		}
+		return nil, nil
+	}
+	if len(data) > apimartInputMediaMaxBytes {
+		return nil, fmt.Errorf("APIMart input image exceeds the 20 MiB limit")
+	}
+
+	mimeType := strings.ToLower(strings.TrimSpace(strings.SplitN(http.DetectContentType(data), ";", 2)[0]))
+	if isApimartSupportedImageMIME(mimeType) {
+		return &apimartInlineImage{data: data, mimeType: mimeType}, nil
+	}
+	if strict || strings.HasPrefix(mimeType, "image/") {
+		return nil, fmt.Errorf("APIMart supports only PNG, JPEG, or WebP input images")
+	}
+	return nil, nil
+}
+
+func isApimartSupportedImageMIME(mimeType string) bool {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "image/png", "image/jpeg", "image/webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func apimartInputMediaUploadConfigForChannel(channelID int) (apimartInputMediaUploadConfig, error) {
+	allowed, err := isApimartBase64ImageChannelAllowed(channelID)
+	if err != nil {
+		return apimartInputMediaUploadConfig{}, err
+	}
+	if !allowed {
+		return apimartInputMediaUploadConfig{}, fmt.Errorf("APIMart base64 image input is not enabled for this channel")
+	}
+
+	uploadURL := strings.TrimSpace(os.Getenv(apimartInputMediaUploadURLEnv))
+	if uploadURL == "" || !isApimartHTTPURL(uploadURL) {
+		return apimartInputMediaUploadConfig{}, fmt.Errorf("APIMart base64 image upload is not configured")
+	}
+	return apimartInputMediaUploadConfig{url: uploadURL}, nil
+}
+
+func isApimartBase64ImageChannelAllowed(channelID int) (bool, error) {
+	configuredIDs := strings.TrimSpace(os.Getenv(apimartBase64ImageChannelIDsEnv))
+	if configuredIDs == "" {
+		return false, nil
+	}
+	for _, configuredID := range strings.Split(configuredIDs, ",") {
+		configuredID = strings.TrimSpace(configuredID)
+		id, err := strconv.Atoi(configuredID)
+		if err != nil || id <= 0 {
+			return false, fmt.Errorf("APIMart base64 image channel allowlist is invalid")
+		}
+		if id == channelID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func uploadApimartInputMedia(ctx context.Context, config apimartInputMediaUploadConfig, image *apimartInlineImage) (string, error) {
+	uploadCtx, cancel := context.WithTimeout(ctx, apimartInputMediaUploadTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(uploadCtx, http.MethodPost, config.url, bytes.NewReader(image.data))
+	if err != nil {
+		return "", fmt.Errorf("APIMart image upload request could not be created")
+	}
+	req.Header.Set("Content-Type", image.mimeType)
+
+	resp, err := (&http.Client{Timeout: apimartInputMediaUploadTimeout}).Do(req)
+	if err != nil {
+		return "", fmt.Errorf("APIMart image upload failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("APIMart image upload failed with status %d", resp.StatusCode)
+	}
+
+	var response struct {
+		URL string `json:"url"`
+	}
+	if err := common.DecodeJson(resp.Body, &response); err != nil {
+		return "", fmt.Errorf("APIMart image upload returned an invalid response")
+	}
+	publicURL := strings.TrimSpace(response.URL)
+	if !isApimartHTTPURL(publicURL) {
+		return "", fmt.Errorf("APIMart image upload returned an invalid URL")
+	}
+	return publicURL, nil
+}
+
+func isApimartHTTPURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return false
+	}
+	return parsed.Host != "" && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https"))
+}
+
+func getCachedApimartRequestBody(c *gin.Context, channelID int) ([]byte, bool) {
+	if c == nil {
+		return nil, false
+	}
+	value, exists := c.Get(apimartRequestBodyContextKey)
+	if !exists {
+		return nil, false
+	}
+	cached, ok := value.(apimartPreparedRequestBody)
+	if !ok || cached.channelID != channelID || len(cached.body) == 0 {
+		return nil, false
+	}
+	return cached.body, true
+}
+
+func cacheApimartRequestBody(c *gin.Context, channelID int, body []byte) {
+	if c == nil {
+		return
+	}
+	c.Set(apimartRequestBodyContextKey, apimartPreparedRequestBody{
+		channelID: channelID,
+		body:      append([]byte(nil), body...),
+	})
 }
 
 func isApimartRelay(info *relaycommon.RelayInfo, modelName string) bool {
