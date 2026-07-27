@@ -157,14 +157,67 @@ func TestBuildApimartPayloadMetadataCannotOverrideModel(t *testing.T) {
 		Metadata: map[string]any{
 			"model":    "wrong-model",
 			"quality":  "720p",
-			"duration": 12,
+			"duration": 10,
 		},
 	}, "grok-imagine-1.5-video-ext")
 
 	require.NoError(t, err)
 	require.Equal(t, "grok-imagine-1.5-video-ext", payload.Model)
 	require.Equal(t, "720p", payload.Quality)
-	require.Equal(t, 12, payload.Duration)
+	require.Equal(t, 10, payload.Duration)
+}
+
+func TestBuildApimartPayloadOnlyAllowsSixOrTenSecondDuration(t *testing.T) {
+	testCases := []struct {
+		name    string
+		req     relaycommon.TaskSubmitReq
+		want    int
+		wantErr string
+	}{
+		{
+			name: "defaults to six seconds",
+			req:  relaycommon.TaskSubmitReq{Prompt: "animate it"},
+			want: 6,
+		},
+		{
+			name: "allows explicit six seconds",
+			req:  relaycommon.TaskSubmitReq{Prompt: "animate it", Duration: 6},
+			want: 6,
+		},
+		{
+			name: "allows explicit ten seconds",
+			req:  relaycommon.TaskSubmitReq{Prompt: "animate it", Seconds: "10"},
+			want: 10,
+		},
+		{
+			name:    "rejects unsupported duration",
+			req:     relaycommon.TaskSubmitReq{Prompt: "animate it", Duration: 8},
+			wantErr: "duration must be 6 or 10 seconds",
+		},
+		{
+			name: "rejects metadata duration override",
+			req: relaycommon.TaskSubmitReq{
+				Prompt: "animate it",
+				Metadata: map[string]any{
+					"duration": 12,
+				},
+			},
+			wantErr: "duration must be 6 or 10 seconds",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			payload, err := buildApimartPayload(testCase.req, "grok-imagine-1.5-video-apimart")
+			if testCase.wantErr != "" {
+				require.EqualError(t, err, testCase.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, testCase.want, payload.Duration)
+		})
+	}
 }
 
 func TestApimartBase64ImageUploadOnlyOccursInBuildRequestBody(t *testing.T) {

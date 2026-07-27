@@ -679,8 +679,8 @@ func buildApimartPayload(req relaycommon.TaskSubmitReq, modelName string) (*apim
 	if payload.Quality == "" {
 		payload.Quality = "480p"
 	}
-	if payload.Duration < 6 || payload.Duration > 30 {
-		return nil, fmt.Errorf("duration must be between 6 and 30 seconds")
+	if payload.Duration != 6 && payload.Duration != 10 {
+		return nil, fmt.Errorf("duration must be 6 or 10 seconds")
 	}
 	if len(payload.ImageURLs) > 7 {
 		return nil, fmt.Errorf("image_urls supports at most 7 images")
