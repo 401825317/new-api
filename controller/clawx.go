@@ -1451,11 +1451,9 @@ func ClawXUpdateFeed(c *gin.Context) {
 			return
 		}
 	}
-	base := strings.TrimRight(clawXEnv("CLAWX_UPDATE_BASE_URL", "https://oss.intelli-spectrum.com"), "/")
-	if channel == "" || file == "" {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "update feed not found"})
-		return
-	}
-	target := fmt.Sprintf("%s/%s/%s", base, url.PathEscape(channel), file)
-	c.Redirect(http.StatusTemporaryRedirect, target)
+	c.JSON(http.StatusNotFound, gin.H{
+		"success": false,
+		"code":    "update_feed_not_found",
+		"message": "未配置可用安装包更新清单",
+	})
 }

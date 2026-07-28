@@ -46,7 +46,11 @@ func setupClawXControllerTest(t *testing.T) {
 
 func createClawXReleaseForTest(t *testing.T, release model.ClawXRelease) {
 	t.Helper()
+	createdAt := release.CreatedAt
 	require.NoError(t, model.CreateClawXRelease(&release))
+	if createdAt != 0 {
+		require.NoError(t, model.DB.Model(&model.ClawXRelease{}).Where("id = ?", release.Id).Update("created_at", createdAt).Error)
+	}
 }
 
 func performClawXRequest(handler gin.HandlerFunc, body string) *httptest.ResponseRecorder {
@@ -55,6 +59,15 @@ func performClawXRequest(handler gin.HandlerFunc, body string) *httptest.Respons
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/clawx/test", bytes.NewBufferString(body))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	handler(ctx)
+	return recorder
+}
+
+func performClawXUpdateFeedRequest(channel string, file string) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/clawx/updates/feed/"+channel+"/"+file, nil)
+	ctx.Params = gin.Params{{Key: "channel", Value: channel}, {Key: "file", Value: "/" + file}}
+	ClawXUpdateFeed(ctx)
 	return recorder
 }
 
@@ -327,4 +340,136 @@ func TestClawXPortableLatestPrefersRequestedArchOverUniversal(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "x64", payload["arch"])
 	require.Equal(t, "x64-sha", payload["sha512"])
+}
+
+func TestClawXLatestReleaseUsesSemanticVersionInsteadOfCreatedAt(t *testing.T) {
+	setupClawXControllerTest(t)
+	now := common.GetTimestamp()
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "win", Arch: "x64", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "0.5.1", FileURL: "https://example.com/0.5.1.exe", Sha512: "old-sha", Size: 101, Enabled: true, CreatedAt: now + 100,
+	})
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "win", Arch: "x64", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "v0.5.2-rc.1", FileURL: "https://example.com/0.5.2-rc.1.exe", Sha512: "rc-sha", Size: 102, Enabled: true, CreatedAt: now + 200,
+	})
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "win", Arch: "x64", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "0.5.2", FileURL: "https://example.com/0.5.2.exe", Sha512: "stable-sha", Size: 103, Enabled: true, CreatedAt: now,
+	})
+
+	payload, ok, err := clawXLatestReleasePayload("latest", "win", model.ClawXReleasePackageTypeInstaller, "x64")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "0.5.2", payload["version"])
+	require.Equal(t, "stable-sha", payload["sha512"])
+}
+
+func TestClawXLatestReleaseUsesCreatedAtThenIDForSameSemanticVersion(t *testing.T) {
+	setupClawXControllerTest(t)
+	now := common.GetTimestamp()
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "win", Arch: "x64", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "0.5.2", FileURL: "https://example.com/older.exe", Sha512: "older-sha", Size: 101, Enabled: true, CreatedAt: now,
+	})
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "win", Arch: "x64", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "v0.5.2", FileURL: "https://example.com/newer.exe", Sha512: "newer-sha", Size: 102, Enabled: true, CreatedAt: now + 1,
+	})
+
+	payload, ok, err := clawXLatestReleasePayload("latest", "win", model.ClawXReleasePackageTypeInstaller, "x64")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "v0.5.2", payload["version"])
+	require.Equal(t, "newer-sha", payload["sha512"])
+}
+
+func TestClawXLatestReleaseUsesIDWhenSemanticVersionAndCreatedAtMatch(t *testing.T) {
+	setupClawXControllerTest(t)
+	now := common.GetTimestamp()
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "win", Arch: "x64", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "0.5.2", FileURL: "https://example.com/first.exe", Sha512: "first-sha", Size: 101, Enabled: true, CreatedAt: now,
+	})
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "win", Arch: "x64", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "v0.5.2", FileURL: "https://example.com/second.exe", Sha512: "second-sha", Size: 102, Enabled: true, CreatedAt: now,
+	})
+
+	payload, ok, err := clawXLatestReleasePayload("latest", "win", model.ClawXReleasePackageTypeInstaller, "x64")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "second-sha", payload["sha512"])
+}
+
+func TestClawXLatestReleaseDoesNotReplaceExactArchWithNewerUniversal(t *testing.T) {
+	setupClawXControllerTest(t)
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "mac", Arch: "universal", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "0.6.0", FileURL: "https://example.com/universal.zip", Sha512: "universal-sha", Size: 201, Enabled: true,
+	})
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "mac", Arch: "arm64", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "0.5.2", FileURL: "https://example.com/arm64.zip", Sha512: "arm64-sha", Size: 202, Enabled: true,
+	})
+
+	payload, ok, err := clawXLatestReleasePayload("latest", "mac", model.ClawXReleasePackageTypeInstaller, "arm64")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "arm64", payload["arch"])
+	require.Equal(t, "0.5.2", payload["version"])
+}
+
+func TestClawXUpdateFeedReturns404WhenInstallerReleaseIsMissing(t *testing.T) {
+	setupClawXControllerTest(t)
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "win", Arch: "x64", PackageType: model.ClawXReleasePackageTypePortableZip,
+		Version: "0.5.2", FileURL: "https://example.com/portable.zip", Sha512: "portable-sha", Size: 100, Enabled: true,
+	})
+
+	recorder := performClawXUpdateFeedRequest("latest", "latest.yml")
+	require.Equal(t, http.StatusNotFound, recorder.Code)
+	require.Equal(t, "application/json; charset=utf-8", recorder.Header().Get("Content-Type"))
+	require.Contains(t, recorder.Body.String(), `"code":"update_feed_not_found"`)
+	require.NotContains(t, recorder.Body.String(), "oss.intelli-spectrum.com")
+}
+
+func TestClawXUpdateFeedBuildsMacFeedForEquivalentSemanticVersions(t *testing.T) {
+	setupClawXControllerTest(t)
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "mac", Arch: "arm64", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "v0.5.2", FileURL: "https://example.com/UClaw-arm64.zip", Sha512: "arm64-sha", Size: 301, Enabled: true,
+	})
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "mac", Arch: "x64", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "0.5.2", FileURL: "https://example.com/UClaw-x64.zip", Sha512: "x64-sha", Size: 302, Enabled: true,
+	})
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "mac", Arch: "x64", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "0.5.1", FileURL: "https://example.com/UClaw-old.zip", Sha512: "old-sha", Size: 303, Enabled: true,
+	})
+
+	recorder := performClawXUpdateFeedRequest("latest", "latest-mac.yml")
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "text/yaml; charset=utf-8", recorder.Header().Get("Content-Type"))
+	require.Contains(t, recorder.Body.String(), `version: "v0.5.2"`)
+	require.Contains(t, recorder.Body.String(), "arm64-sha")
+	require.Contains(t, recorder.Body.String(), "x64-sha")
+	require.NotContains(t, recorder.Body.String(), "old-sha")
+}
+
+func TestClawXUpdateFeedDoesNotMixMacArchitecturesAcrossVersions(t *testing.T) {
+	setupClawXControllerTest(t)
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "mac", Arch: "arm64", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "0.5.2", FileURL: "https://example.com/UClaw-arm64.zip", Sha512: "arm64-sha", Size: 301, Enabled: true,
+	})
+	createClawXReleaseForTest(t, model.ClawXRelease{
+		Channel: "latest", Platform: "mac", Arch: "x64", PackageType: model.ClawXReleasePackageTypeInstaller,
+		Version: "0.5.1", FileURL: "https://example.com/UClaw-x64-old.zip", Sha512: "x64-old-sha", Size: 302, Enabled: true,
+	})
+
+	recorder := performClawXUpdateFeedRequest("latest", "latest-mac.yml")
+	require.Equal(t, http.StatusNotFound, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"code":"update_feed_not_found"`)
 }

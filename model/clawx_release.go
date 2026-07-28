@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 package model
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -150,14 +151,12 @@ func GetLatestClawXRelease(channel string, platform string, packageType string, 
 	platform = strings.ToLower(strings.TrimSpace(platform))
 	packageType = NormalizeClawXReleasePackageType(packageType)
 	arch = strings.ToLower(strings.TrimSpace(arch))
-	var latest ClawXRelease
 	query := DB.Where("channel = ? AND platform = ? AND enabled = ?", channel, platform, true)
 	query = applyClawXReleasePackageTypeFilter(query, packageType)
 	if arch != "" {
-		err := query.Where("arch = ?", arch).Order("created_at desc, id desc").First(&latest).Error
+		latest, err := getLatestUsableClawXRelease(query.Where("arch = ?", arch))
 		if err == nil {
-			NormalizeClawXRelease(&latest)
-			return &latest, nil
+			return latest, nil
 		}
 		if err != gorm.ErrRecordNotFound {
 			return nil, err
@@ -165,12 +164,192 @@ func GetLatestClawXRelease(channel string, platform string, packageType string, 
 		query = DB.Where("channel = ? AND platform = ? AND enabled = ? AND arch = ?", channel, platform, true, "universal")
 		query = applyClawXReleasePackageTypeFilter(query, packageType)
 	}
-	err := query.Order("created_at desc, id desc").First(&latest).Error
-	if err != nil {
+	return getLatestUsableClawXRelease(query)
+}
+
+func getLatestUsableClawXRelease(query *gorm.DB) (*ClawXRelease, error) {
+	var releases []*ClawXRelease
+	if err := query.Find(&releases).Error; err != nil {
 		return nil, err
 	}
-	NormalizeClawXRelease(&latest)
-	return &latest, nil
+
+	var latest *ClawXRelease
+	for _, release := range releases {
+		NormalizeClawXRelease(release)
+		if !isUsableClawXRelease(release) {
+			continue
+		}
+		if latest == nil || compareClawXRelease(latest, release) < 0 {
+			latest = release
+		}
+	}
+	if latest == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return latest, nil
+}
+
+func isUsableClawXRelease(release *ClawXRelease) bool {
+	return release.Version != "" && release.FileURL != "" && release.Sha512 != "" && release.Size > 0
+}
+
+// compareClawXRelease compares semantic versions first, then keeps equal versions stable by creation time and id.
+func compareClawXRelease(left *ClawXRelease, right *ClawXRelease) int {
+	leftVersion, leftValid := parseClawXSemanticVersion(left.Version)
+	rightVersion, rightValid := parseClawXSemanticVersion(right.Version)
+	if leftValid && rightValid {
+		if comparison := compareClawXSemanticVersion(leftVersion, rightVersion); comparison != 0 {
+			return comparison
+		}
+	} else if leftValid != rightValid {
+		if leftValid {
+			return 1
+		}
+		return -1
+	}
+	if left.CreatedAt != right.CreatedAt {
+		if left.CreatedAt > right.CreatedAt {
+			return 1
+		}
+		return -1
+	}
+	if left.Id > right.Id {
+		return 1
+	}
+	if left.Id < right.Id {
+		return -1
+	}
+	return 0
+}
+
+type clawXSemanticVersion struct {
+	major      uint64
+	minor      uint64
+	patch      uint64
+	prerelease []string
+}
+
+func parseClawXSemanticVersion(raw string) (clawXSemanticVersion, bool) {
+	value := strings.TrimSpace(raw)
+	if len(value) > 1 && (value[0] == 'v' || value[0] == 'V') {
+		value = value[1:]
+	}
+	if plus := strings.IndexByte(value, '+'); plus >= 0 {
+		value = value[:plus]
+	}
+	core := value
+	prerelease := ""
+	if dash := strings.IndexByte(value, '-'); dash >= 0 {
+		core = value[:dash]
+		prerelease = value[dash+1:]
+		if prerelease == "" {
+			return clawXSemanticVersion{}, false
+		}
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return clawXSemanticVersion{}, false
+	}
+	numbers := [3]uint64{}
+	for index, part := range parts {
+		if !isClawXNumericIdentifier(part) {
+			return clawXSemanticVersion{}, false
+		}
+		parsed, err := strconv.ParseUint(part, 10, 64)
+		if err != nil {
+			return clawXSemanticVersion{}, false
+		}
+		numbers[index] = parsed
+	}
+	version := clawXSemanticVersion{major: numbers[0], minor: numbers[1], patch: numbers[2]}
+	if prerelease != "" {
+		version.prerelease = strings.Split(prerelease, ".")
+		for _, part := range version.prerelease {
+			if part == "" || !isClawXPrereleaseIdentifier(part) {
+				return clawXSemanticVersion{}, false
+			}
+		}
+	}
+	return version, true
+}
+
+func isClawXNumericIdentifier(value string) bool {
+	if value == "" || (len(value) > 1 && value[0] == '0') {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isClawXPrereleaseIdentifier(value string) bool {
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func compareClawXSemanticVersion(left clawXSemanticVersion, right clawXSemanticVersion) int {
+	for _, pair := range [][2]uint64{{left.major, right.major}, {left.minor, right.minor}, {left.patch, right.patch}} {
+		if pair[0] > pair[1] {
+			return 1
+		}
+		if pair[0] < pair[1] {
+			return -1
+		}
+	}
+	if len(left.prerelease) == 0 || len(right.prerelease) == 0 {
+		if len(left.prerelease) == 0 && len(right.prerelease) != 0 {
+			return 1
+		}
+		if len(left.prerelease) != 0 && len(right.prerelease) == 0 {
+			return -1
+		}
+		return 0
+	}
+	limit := len(left.prerelease)
+	if len(right.prerelease) < limit {
+		limit = len(right.prerelease)
+	}
+	for index := 0; index < limit; index++ {
+		leftPart, rightPart := left.prerelease[index], right.prerelease[index]
+		leftNumeric, rightNumeric := isClawXNumericIdentifier(leftPart), isClawXNumericIdentifier(rightPart)
+		if leftNumeric && rightNumeric {
+			leftNumber, _ := strconv.ParseUint(leftPart, 10, 64)
+			rightNumber, _ := strconv.ParseUint(rightPart, 10, 64)
+			if leftNumber > rightNumber {
+				return 1
+			}
+			if leftNumber < rightNumber {
+				return -1
+			}
+			continue
+		}
+		if leftNumeric != rightNumeric {
+			if leftNumeric {
+				return -1
+			}
+			return 1
+		}
+		if leftPart > rightPart {
+			return 1
+		}
+		if leftPart < rightPart {
+			return -1
+		}
+	}
+	if len(left.prerelease) > len(right.prerelease) {
+		return 1
+	}
+	if len(left.prerelease) < len(right.prerelease) {
+		return -1
+	}
+	return 0
 }
 
 func GetLatestClawXFeedReleases(channel string, platform string, packageType string) ([]*ClawXRelease, error) {
@@ -183,10 +362,55 @@ func GetLatestClawXFeedReleases(channel string, platform string, packageType str
 	packageType = latest.PackageType
 
 	var releases []*ClawXRelease
-	query := DB.Where("channel = ? AND platform = ? AND version = ? AND enabled = ?", channel, platform, latest.Version, true)
+	query := DB.Where("channel = ? AND platform = ? AND enabled = ?", channel, platform, true)
 	query = applyClawXReleasePackageTypeFilter(query, packageType)
 	err = query.
 		Order("arch asc, id asc").
 		Find(&releases).Error
-	return releases, err
+	if err != nil {
+		return nil, err
+	}
+	latestVersion, latestVersionValid := parseClawXSemanticVersion(latest.Version)
+	usableReleases := make([]*ClawXRelease, 0, len(releases))
+	for _, release := range releases {
+		NormalizeClawXRelease(release)
+		if !isUsableClawXRelease(release) {
+			continue
+		}
+		if candidateVersion, candidateVersionValid := parseClawXSemanticVersion(release.Version); latestVersionValid && candidateVersionValid {
+			if compareClawXSemanticVersion(latestVersion, candidateVersion) != 0 {
+				continue
+			}
+		} else if release.Version != latest.Version {
+			continue
+		}
+		usableReleases = append(usableReleases, release)
+	}
+	if len(usableReleases) == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	if platform == "mac" && !hasCompleteMacClawXFeed(usableReleases) {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return usableReleases, nil
+}
+
+// electron-updater reads one macOS manifest for both Intel and Apple Silicon.
+// Never publish a newer arm64-only (or x64-only) version through that shared
+// manifest, because the other architecture could download an unusable app.
+func hasCompleteMacClawXFeed(releases []*ClawXRelease) bool {
+	var hasUniversal bool
+	var hasX64 bool
+	var hasArm64 bool
+	for _, release := range releases {
+		switch release.Arch {
+		case "universal":
+			hasUniversal = true
+		case "x64":
+			hasX64 = true
+		case "arm64":
+			hasArm64 = true
+		}
+	}
+	return hasUniversal || (hasX64 && hasArm64)
 }
