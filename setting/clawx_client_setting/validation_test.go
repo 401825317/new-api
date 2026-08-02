@@ -1,8 +1,11 @@
 package clawx_client_setting
 
 import (
-	"encoding/json"
 	"testing"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateSupportAcceptsMultipleContacts(t *testing.T) {
@@ -85,68 +88,45 @@ func TestNormalizeSupportContactsFiltersDisabledAndEmptyQRCode(t *testing.T) {
 	}
 }
 
-func TestGetModelOptionsRestrictsStaleGrokVideoDurations(t *testing.T) {
+func TestGetModelOptionsPublishesSupportedGrokVideoCapabilities(t *testing.T) {
 	original := clientSetting
 	t.Cleanup(func() {
 		clientSetting = original
 	})
-	clientSetting.ModelOptions = `{"video":{"defaultModel":"grok-image-video","defaultDurationSeconds":15,"models":[{"id":"grok-image-video","durations":[6,10,15],"defaultDurationSeconds":15},{"id":"grok-video-1.5","durations":[15],"defaultDurationSeconds":15},{"id":"other-video","durations":[5,15],"defaultDurationSeconds":15}]}}`
+	clientSetting.ModelOptions = `{"video":{"defaultModel":"grok-image-video","defaultSize":"1280x720","defaultDurationSeconds":15,"models":[{"id":"grok-image-video","sizes":["854x480","1280x720","720x1280"],"durations":[6,10,15],"defaultSize":"1280x720","defaultDurationSeconds":15},{"id":"grok-video-1.5","sizes":["1280x720"],"durations":[15],"defaultSize":"1280x720","defaultDurationSeconds":15},{"id":"other-video","sizes":["640x360"],"durations":[5,15],"defaultDurationSeconds":15}]}}`
 
 	options := GetModelOptions()
-	if options.Video.DefaultDurationSeconds != 6 {
-		t.Fatalf("expected Grok video default duration to be 6, got %d", options.Video.DefaultDurationSeconds)
-	}
-	if len(options.Video.Models) != 3 {
-		t.Fatalf("expected three video models, got %d", len(options.Video.Models))
-	}
-	for _, model := range options.Video.Models[:2] {
-		assertDurations(t, model.Durations, []int{6, 10})
-		if model.DefaultDurationSeconds != 6 {
-			t.Fatalf("expected %s default duration to be 6, got %d", model.Id, model.DefaultDurationSeconds)
-		}
-	}
-	assertDurations(t, options.Video.Models[2].Durations, []int{5, 15})
-	if options.Video.Models[2].DefaultDurationSeconds != 15 {
-		t.Fatalf("expected non-Grok video duration to stay 15, got %d", options.Video.Models[2].DefaultDurationSeconds)
-	}
+	require.Len(t, options.Video.Models, 3)
+	assert.Equal(t, 15, options.Video.DefaultDurationSeconds)
+	assert.Equal(t, []int{6, 10, 15}, options.Video.Models[0].Durations)
+	assert.Equal(t, []string{"854x480", "1280x720", "720x1280", "1920x1080"}, options.Video.Models[0].Sizes)
+	assert.Equal(t, 15, options.Video.Models[0].DefaultDurationSeconds)
+	assert.Equal(t, []int{6, 10, 15}, options.Video.Models[1].Durations)
+	assert.Equal(t, []string{"854x480", "1280x720", "720x1280"}, options.Video.Models[1].Sizes)
+	assert.Equal(t, 15, options.Video.Models[1].DefaultDurationSeconds)
+	assert.Equal(t, []int{5, 15}, options.Video.Models[2].Durations)
+	assert.Equal(t, []string{"640x360"}, options.Video.Models[2].Sizes)
+	assert.Equal(t, 15, options.Video.Models[2].DefaultDurationSeconds)
 }
 
-func TestDefaultModelOptionsOnlyExposeSupportedGrokVideoDurations(t *testing.T) {
+func TestDefaultModelOptionsNormalizeToSupportedGrokVideoCapabilities(t *testing.T) {
 	var options ModelOptions
-	if err := json.Unmarshal([]byte(defaultModelOptionsJSON), &options); err != nil {
-		t.Fatalf("unmarshal default model options: %v", err)
-	}
-	if options.Video.DefaultDurationSeconds != 6 {
-		t.Fatalf("expected default video duration to be 6, got %d", options.Video.DefaultDurationSeconds)
-	}
+	require.NoError(t, common.UnmarshalJsonStr(defaultModelOptionsJSON, &options))
+	options = normalizeModelOptions(options)
+	require.Len(t, options.Video.Models, 2)
+	assert.Equal(t, 6, options.Video.DefaultDurationSeconds)
 	for _, model := range options.Video.Models {
-		assertDurations(t, model.Durations, []int{6, 10})
-		if model.DefaultDurationSeconds != 6 {
-			t.Fatalf("expected %s default duration to be 6, got %d", model.Id, model.DefaultDurationSeconds)
-		}
+		assert.Equal(t, []int{6, 10, 15}, model.Durations)
+		assert.Equal(t, 6, model.DefaultDurationSeconds)
 	}
+	assert.Equal(t, []string{"854x480", "1280x720", "720x1280", "1920x1080"}, options.Video.Models[0].Sizes)
+	assert.Equal(t, []string{"854x480", "1280x720", "720x1280"}, options.Video.Models[1].Sizes)
 }
 
 func TestValidateModelOptionsRejectsUnsupportedGrokVideoDurations(t *testing.T) {
-	invalid := `{"video":{"defaultModel":"grok-image-video","defaultDurationSeconds":15,"models":[{"id":"grok-image-video","durations":[6,10,15],"defaultDurationSeconds":15}]}}`
-	if err := ValidateClientSettings(invalid, "ModelOptions"); err == nil {
-		t.Fatal("expected unsupported Grok video duration to be rejected")
-	}
+	invalid := `{"video":{"defaultModel":"grok-image-video","defaultDurationSeconds":8,"models":[{"id":"grok-image-video","durations":[6,8,10,15],"defaultDurationSeconds":8}]}}`
+	require.Error(t, ValidateClientSettings(invalid, "ModelOptions"))
 
-	valid := `{"video":{"defaultModel":"grok-image-video","defaultDurationSeconds":6,"models":[{"id":"grok-image-video","durations":[6,10],"defaultDurationSeconds":6}]}}`
-	if err := ValidateClientSettings(valid, "ModelOptions"); err != nil {
-		t.Fatalf("expected 6/10 Grok video durations to be valid, got %v", err)
-	}
-}
-
-func assertDurations(t *testing.T, got []int, want []int) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("duration count mismatch: got %v, want %v", got, want)
-	}
-	for i, duration := range want {
-		if got[i] != duration {
-			t.Fatalf("duration mismatch: got %v, want %v", got, want)
-		}
-	}
+	valid := `{"video":{"defaultModel":"grok-image-video","defaultDurationSeconds":15,"models":[{"id":"grok-image-video","durations":[6,10,15],"defaultDurationSeconds":15}]}}`
+	require.NoError(t, ValidateClientSettings(valid, "ModelOptions"))
 }

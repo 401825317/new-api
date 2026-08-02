@@ -18,7 +18,11 @@ var validAnnouncementLevels = map[string]bool{
 
 const defaultGrokVideoDurationSeconds = 6
 
-var supportedGrokVideoDurations = []int{6, 10}
+var supportedGrokVideoDurations = []int{6, 10, 15}
+
+var supportedGrokImageVideoSizes = []string{"854x480", "1280x720", "720x1280", "1920x1080"}
+
+var supportedGrokVideo15Sizes = []string{"854x480", "1280x720", "720x1280"}
 
 func ValidateClientSettings(settingsStr string, settingType string) error {
 	if strings.TrimSpace(settingsStr) == "" {
@@ -242,16 +246,16 @@ func validateModelOptions(settingsStr string) error {
 				return fmt.Errorf("video model %d has invalid duration: %d", index, duration)
 			}
 			if isGrokVideoModel(item.Id) && !isSupportedGrokVideoDuration(duration) {
-				return fmt.Errorf("Grok video model %d only supports 6 or 10 second durations", index)
+				return fmt.Errorf("Grok video model %d only supports 6, 10, or 15 second durations", index)
 			}
 		}
 		if isGrokVideoModel(item.Id) && item.DefaultDurationSeconds != 0 && !isSupportedGrokVideoDuration(item.DefaultDurationSeconds) {
-			return fmt.Errorf("Grok video model %d default duration must be 6 or 10 seconds", index)
+			return fmt.Errorf("Grok video model %d default duration must be 6, 10, or 15 seconds", index)
 		}
 	}
 	defaultVideoModel := fallbackString(options.Video.DefaultModel, "grok-image-video")
 	if isGrokVideoModel(defaultVideoModel) && options.Video.DefaultDurationSeconds != 0 && !isSupportedGrokVideoDuration(options.Video.DefaultDurationSeconds) {
-		return fmt.Errorf("default Grok video duration must be 6 or 10 seconds")
+		return fmt.Errorf("default Grok video duration must be 6, 10, or 15 seconds")
 	}
 	return nil
 }
@@ -387,7 +391,7 @@ func normalizeModelOptions(options ModelOptions) ModelOptions {
 	if !videoModelExists(options.Video.Models, options.Video.DefaultModel) && len(options.Video.Models) > 0 {
 		options.Video.DefaultModel = options.Video.Models[0].Id
 	}
-	if isGrokVideoModel(options.Video.DefaultModel) {
+	if isGrokVideoModel(options.Video.DefaultModel) && !isSupportedGrokVideoDuration(options.Video.DefaultDurationSeconds) {
 		options.Video.DefaultDurationSeconds = defaultGrokVideoDurationSeconds
 	} else if options.Video.DefaultDurationSeconds <= 0 {
 		options.Video.DefaultDurationSeconds = defaults.Video.DefaultDurationSeconds
@@ -466,8 +470,11 @@ func normalizeVideoModels(models []ClientVideoModelItem) []ClientVideoModelItem 
 		item.Modes = normalizeStringList(item.Modes)
 		item.Sizes = normalizeStringList(item.Sizes)
 		if isGrokVideoModel(item.Id) {
+			item.Sizes = supportedGrokVideoSizes(item.Id)
 			item.Durations = cloneSupportedGrokVideoDurations()
-			item.DefaultDurationSeconds = defaultGrokVideoDurationSeconds
+			if !isSupportedGrokVideoDuration(item.DefaultDurationSeconds) {
+				item.DefaultDurationSeconds = defaultGrokVideoDurationSeconds
+			}
 		} else {
 			item.Durations = normalizeDurationList(item.Durations)
 		}
@@ -540,6 +547,17 @@ func isSupportedGrokVideoDuration(duration int) bool {
 
 func cloneSupportedGrokVideoDurations() []int {
 	return append([]int(nil), supportedGrokVideoDurations...)
+}
+
+func supportedGrokVideoSizes(modelID string) []string {
+	var sizes []string
+	switch strings.ToLower(strings.TrimSpace(modelID)) {
+	case "grok-image-video", "grok-imagine-video":
+		sizes = supportedGrokImageVideoSizes
+	case "grok-video-1.5", "grok-imagine-video-1.5", "grok-imagine-1.5-video-apimart", "grok-imagine-1.5-video-ext":
+		sizes = supportedGrokVideo15Sizes
+	}
+	return append([]string(nil), sizes...)
 }
 
 func textModelExists(models []ClientModelItem, id string) bool {
