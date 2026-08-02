@@ -102,7 +102,7 @@ func TestGetModelOptionsPublishesSupportedGrokVideoCapabilities(t *testing.T) {
 	assert.Equal(t, []string{"854x480", "1280x720", "720x1280", "1920x1080"}, options.Video.Models[0].Sizes)
 	assert.Equal(t, 15, options.Video.Models[0].DefaultDurationSeconds)
 	assert.Equal(t, []int{6, 10, 15}, options.Video.Models[1].Durations)
-	assert.Equal(t, []string{"854x480", "1280x720", "720x1280"}, options.Video.Models[1].Sizes)
+	assert.Equal(t, []string{"854x480", "1280x720", "720x1280", "1920x1080"}, options.Video.Models[1].Sizes)
 	assert.Equal(t, 15, options.Video.Models[1].DefaultDurationSeconds)
 	assert.Equal(t, []int{5, 15}, options.Video.Models[2].Durations)
 	assert.Equal(t, []string{"640x360"}, options.Video.Models[2].Sizes)
@@ -120,7 +120,7 @@ func TestDefaultModelOptionsNormalizeToSupportedGrokVideoCapabilities(t *testing
 		assert.Equal(t, 6, model.DefaultDurationSeconds)
 	}
 	assert.Equal(t, []string{"854x480", "1280x720", "720x1280", "1920x1080"}, options.Video.Models[0].Sizes)
-	assert.Equal(t, []string{"854x480", "1280x720", "720x1280"}, options.Video.Models[1].Sizes)
+	assert.Equal(t, []string{"854x480", "1280x720", "720x1280", "1920x1080"}, options.Video.Models[1].Sizes)
 }
 
 func TestValidateModelOptionsRejectsUnsupportedGrokVideoDurations(t *testing.T) {

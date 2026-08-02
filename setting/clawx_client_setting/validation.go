@@ -22,7 +22,7 @@ var supportedGrokVideoDurations = []int{6, 10, 15}
 
 var supportedGrokImageVideoSizes = []string{"854x480", "1280x720", "720x1280", "1920x1080"}
 
-var supportedGrokVideo15Sizes = []string{"854x480", "1280x720", "720x1280"}
+var supportedGrokVideo15Sizes = []string{"854x480", "1280x720", "720x1280", "1920x1080"}
 
 func ValidateClientSettings(settingsStr string, settingType string) error {
 	if strings.TrimSpace(settingsStr) == "" {
