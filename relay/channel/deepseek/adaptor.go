@@ -1,6 +1,7 @@
 package deepseek
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/claude"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
@@ -68,6 +70,8 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 		switch info.RelayMode {
 		case constant.RelayModeCompletions:
 			return fmt.Sprintf("%s/completions", fimBaseUrl), nil
+		case constant.RelayModeResponses:
+			return fmt.Sprintf("%s/responses", info.ChannelBaseUrl), nil
 		default:
 			return fmt.Sprintf("%s/v1/chat/completions", info.ChannelBaseUrl), nil
 		}
@@ -159,8 +163,101 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
-	// TODO implement me
-	return nil, errors.New("not implemented")
+	removedReasoning, removedCompaction, err := stripForeignResponsesState(&request)
+	if err != nil {
+		return nil, err
+	}
+	if removedReasoning+removedCompaction > 0 {
+		if request.Reasoning == nil {
+			request.Reasoning = &dto.Reasoning{}
+		}
+		request.Reasoning.Effort = "none"
+		if c != nil {
+			logger.LogInfo(c, fmt.Sprintf(
+				"deepseek responses fallback removed provider-bound state: reasoning=%d compaction=%d",
+				removedReasoning,
+				removedCompaction,
+			))
+		}
+	}
+	applyDeepSeekV4ResponsesThinkingSuffix(info, &request)
+	return request, nil
+}
+
+func stripForeignResponsesState(request *dto.OpenAIResponsesRequest) (removedReasoning int, removedCompaction int, err error) {
+	if request == nil || len(request.Input) == 0 {
+		return 0, 0, nil
+	}
+
+	var input []json.RawMessage
+	if err := json.Unmarshal(request.Input, &input); err != nil {
+		// The Responses API also accepts a plain input string. Leave non-array input untouched.
+		return 0, 0, nil
+	}
+
+	filtered := make([]json.RawMessage, 0, len(input))
+	for _, rawItem := range input {
+		var item map[string]json.RawMessage
+		if err := json.Unmarshal(rawItem, &item); err != nil {
+			filtered = append(filtered, rawItem)
+			continue
+		}
+
+		var itemType string
+		_ = json.Unmarshal(item["type"], &itemType)
+		if itemType != "reasoning" && itemType != "compaction" && itemType != "compaction_summary" {
+			filtered = append(filtered, rawItem)
+			continue
+		}
+
+		var encryptedContent string
+		if encryptedRaw, ok := item["encrypted_content"]; ok {
+			_ = json.Unmarshal(encryptedRaw, &encryptedContent)
+		}
+		if encryptedContent == "" {
+			filtered = append(filtered, rawItem)
+			continue
+		}
+
+		if itemType == "reasoning" {
+			removedReasoning++
+		} else {
+			removedCompaction++
+		}
+	}
+
+	if removedReasoning+removedCompaction == 0 {
+		return 0, 0, nil
+	}
+	request.Input, err = json.Marshal(filtered)
+	if err != nil {
+		return 0, 0, fmt.Errorf("marshal DeepSeek Responses fallback input: %w", err)
+	}
+	return removedReasoning, removedCompaction, nil
+}
+
+func applyDeepSeekV4ResponsesThinkingSuffix(info *relaycommon.RelayInfo, request *dto.OpenAIResponsesRequest) {
+	modelName := request.Model
+	if info != nil && info.ChannelMeta != nil && info.UpstreamModelName != "" {
+		modelName = info.UpstreamModelName
+	}
+	baseModel, thinkingType, effort, ok := reasoning.ParseDeepSeekV4ThinkingSuffix(modelName)
+	if ok {
+		if thinkingType == "disabled" {
+			effort = "none"
+		}
+		request.Model = baseModel
+		if request.Reasoning == nil {
+			request.Reasoning = &dto.Reasoning{}
+		}
+		request.Reasoning.Effort = effort
+		if info != nil && info.ChannelMeta != nil {
+			info.UpstreamModelName = baseModel
+		}
+	}
+	if info != nil && request.Reasoning != nil {
+		info.ReasoningEffort = request.Reasoning.Effort
+	}
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
