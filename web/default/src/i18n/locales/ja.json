@@ -4720,6 +4720,14 @@
     "Zero retention": "データ保持なし",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Default reasoning level": "既定の推論レベル",
+    "Used when a conversation has no explicit reasoning level.": "会話で推論レベルが明示的に選択されていない場合に使用されます。",
+    "Off": "オフ",
+    "Minimal": "最小",
+    "Low": "低",
+    "Medium": "中",
+    "High": "高",
+    "Extra High": "最高"
   }
 }

@@ -4780,6 +4780,14 @@
     "Extra Notes": "Extra Notes",
     "Support will reply as soon as possible.": "Support will reply as soon as possible.",
     "Scan the QR code to contact support for account, billing, and model usage questions.": "Scan the QR code to contact support for account, billing, and model usage questions.",
-    "{{count}} support contacts will be removed from the list.": "{{count}} support contacts will be removed from the list."
+    "{{count}} support contacts will be removed from the list.": "{{count}} support contacts will be removed from the list.",
+    "Default reasoning level": "Default reasoning level",
+    "Used when a conversation has no explicit reasoning level.": "Used when a conversation has no explicit reasoning level.",
+    "Off": "Off",
+    "Minimal": "Minimal",
+    "Low": "Low",
+    "Medium": "Medium",
+    "High": "High",
+    "Extra High": "Extra High"
   }
 }

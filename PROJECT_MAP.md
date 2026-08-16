@@ -9,7 +9,7 @@ new-api 是 Go + Gin + GORM 实现的大模型中转站，提供用户管理、�
 - 本地目录：`backend/`
 - origin：`https://github.com/401825317/new-api.git`
 - upstream：`https://github.com/QuantumNous/new-api.git`
-- 当前分支：`feature/clawx-newapi-adapter`
+- 当前分支：`v1.0.0`（zz-cn 生产和管理台主线）
 - 后端语言：Go，模块名 `github.com/QuantumNous/new-api`
 - 前端控制台：`web/default/` 为新版 React 控制台，`web/classic/` 为经典控制台
 
@@ -60,7 +60,7 @@ new-api 是 Go + Gin + GORM 实现的大模型中转站，提供用户管理、�
 - `POST /billing/orders/verify`：校验订单支付状态。
 - `GET /updates/latest`：返回最新版本信息。
 - `GET /updates/feed/:channel/*file`：返回 Electron updater feed。
-- `GET /client-config`：返回 ClawX 客户端重要公告和帮助与客服多联系人二维码配置。当前是轻量配置能力，不做用户私信、服务端已读或实时长连接。
+- `GET /client-config`：返回 ClawX 文本/图片/视频模型策略、默认推理等级、重要公告和帮助与客服配置。默认推理等级存储在 `clawx_client_setting.model_options` 的 `text.defaultThinkingLevel`，下发路径为 `modelOptions.text.defaultThinkingLevel`；该动态接口必须禁用长期 HTTP 缓存。
 
 ### 登录、注册、设备授权契约
 

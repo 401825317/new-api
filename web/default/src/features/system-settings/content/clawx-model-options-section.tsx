@@ -18,9 +18,18 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMemo, useState } from 'react'
 import { Save } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { SettingsCard } from '../components/settings-card'
 import { SettingsSection } from '../components/settings-section'
@@ -33,6 +42,7 @@ type ClawXModelOptionsSectionProps = {
 type ParsedModelOptions = {
   text?: {
     defaultModel?: string
+    defaultThinkingLevel?: string
     models?: unknown[]
   }
   image?: {
@@ -43,6 +53,27 @@ type ParsedModelOptions = {
     defaultModel?: string
     models?: unknown[]
   }
+}
+
+type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
+const thinkingLevelOptions: Array<{
+  value: ThinkingLevel
+  labelKey: string
+}> = [
+  { value: 'off', labelKey: 'Off' },
+  { value: 'minimal', labelKey: 'Minimal' },
+  { value: 'low', labelKey: 'Low' },
+  { value: 'medium', labelKey: 'Medium' },
+  { value: 'high', labelKey: 'High' },
+  { value: 'xhigh', labelKey: 'Extra High' },
+]
+
+function normalizeThinkingLevel(value: string | undefined): ThinkingLevel {
+  const normalized = value?.trim().toLowerCase()
+  return thinkingLevelOptions.some((option) => option.value === normalized)
+    ? (normalized as ThinkingLevel)
+    : 'medium'
 }
 
 function formatJson(data: string): string {
@@ -72,11 +103,15 @@ function countModels(models: unknown[] | undefined): number {
 export function ClawXModelOptionsSection({
   data,
 }: ClawXModelOptionsSectionProps) {
+  const { t } = useTranslation()
   const updateOption = useUpdateOption()
   const [value, setValue] = useState(() => formatJson(data))
 
   const parsed = useMemo(() => parseModelOptions(value), [value])
   const hasInvalidJson = parsed === null
+  const defaultThinkingLevel = normalizeThinkingLevel(
+    parsed?.text?.defaultThinkingLevel
+  )
 
   const handleFormat = () => {
     const next = parseModelOptions(value)
@@ -99,6 +134,25 @@ export function ClawXModelOptionsSection({
     })
   }
 
+  const handleThinkingLevelChange = (level: ThinkingLevel | null) => {
+    if (!level || !parsed) {
+      return
+    }
+    setValue(
+      JSON.stringify(
+        {
+          ...parsed,
+          text: {
+            ...parsed.text,
+            defaultThinkingLevel: level,
+          },
+        },
+        null,
+        2
+      )
+    )
+  }
+
   return (
     <SettingsSection title='ClawX Model Options'>
       <SettingsCard
@@ -106,6 +160,38 @@ export function ClawXModelOptionsSection({
         description='Served by /api/clawx/client-config and consumed by UClaw for text, image, and video model selectors.'
       >
         <div className='flex flex-col gap-4'>
+          <div className='grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(12rem,18rem)] md:items-center'>
+            <div>
+              <Label htmlFor='clawx-default-thinking-level'>
+                {t('Default reasoning level')}
+              </Label>
+              <p className='text-muted-foreground mt-1 text-sm'>
+                {t('Used when a conversation has no explicit reasoning level.')}
+              </p>
+            </div>
+            <Select
+              value={defaultThinkingLevel}
+              onValueChange={handleThinkingLevelChange}
+              disabled={hasInvalidJson || updateOption.isPending}
+            >
+              <SelectTrigger
+                id='clawx-default-thinking-level'
+                className='w-full'
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent alignItemWithTrigger={false}>
+                <SelectGroup>
+                  {thinkingLevelOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {t(option.labelKey)}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className='grid gap-3 md:grid-cols-3'>
             <div className='rounded-md border p-3'>
               <div className='text-sm font-medium'>Text</div>

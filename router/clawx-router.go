@@ -10,8 +10,8 @@ func SetClawXRouter(apiRouter *gin.RouterGroup, anonymousRequestBodyLimit gin.Ha
 	clawXRoute := apiRouter.Group("/clawx")
 	clawXRoute.Use(middleware.ClawXAPIRateLimit())
 	{
-		clawXRoute.GET("/bootstrap", controller.ClawXBootstrap)
-		clawXRoute.GET("/client-config", controller.ClawXClientConfig)
+		clawXRoute.GET("/bootstrap", middleware.DisableCache(), controller.ClawXBootstrap)
+		clawXRoute.GET("/client-config", middleware.DisableCache(), controller.ClawXClientConfig)
 		clawXRoute.GET("/support-qrcodes/:file", controller.ClawXSupportQRCode)
 		clawXRoute.POST("/activation/check", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ClawXActivationCheck)
 		clawXRoute.POST("/verification/send-code", middleware.EmailVerificationRateLimit(), anonymousRequestBodyLimit, controller.ClawXSendVerificationCode)

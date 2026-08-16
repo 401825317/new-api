@@ -130,3 +130,21 @@ func TestValidateModelOptionsRejectsUnsupportedGrokVideoDurations(t *testing.T) 
 	valid := `{"video":{"defaultModel":"grok-image-video","defaultDurationSeconds":15,"models":[{"id":"grok-image-video","durations":[6,10,15],"defaultDurationSeconds":15}]}}`
 	require.NoError(t, ValidateClientSettings(valid, "ModelOptions"))
 }
+
+func TestModelOptionsDefaultThinkingLevelContract(t *testing.T) {
+	original := clientSetting
+	t.Cleanup(func() {
+		clientSetting = original
+	})
+
+	clientSetting.ModelOptions = `{"text":{"defaultModel":"smart-latest","defaultThinkingLevel":" HIGH ","models":[{"id":"smart-latest","enabled":true}]}}`
+	options := GetModelOptions()
+	assert.Equal(t, "high", options.Text.DefaultThinkingLevel)
+
+	clientSetting.ModelOptions = `{"text":{"defaultModel":"smart-latest","models":[{"id":"smart-latest","enabled":true}]}}`
+	options = GetModelOptions()
+	assert.Equal(t, "medium", options.Text.DefaultThinkingLevel)
+
+	require.NoError(t, ValidateClientSettings(`{"text":{"defaultThinkingLevel":"off"}}`, "ModelOptions"))
+	require.Error(t, ValidateClientSettings(`{"text":{"defaultThinkingLevel":"extreme"}}`, "ModelOptions"))
+}

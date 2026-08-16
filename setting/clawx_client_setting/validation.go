@@ -200,6 +200,9 @@ func validateModelOptions(settingsStr string) error {
 	if len(options.Video.Models) > 30 {
 		return fmt.Errorf("video model count cannot exceed 30")
 	}
+	if level := strings.ToLower(strings.TrimSpace(options.Text.DefaultThinkingLevel)); level != "" && !isSupportedThinkingLevel(level) {
+		return fmt.Errorf("default thinking level must be one of off, minimal, low, medium, high, or xhigh")
+	}
 	for i, item := range options.Text.Models {
 		index := i + 1
 		if strings.TrimSpace(item.Id) == "" {
@@ -367,6 +370,10 @@ func normalizeModelOptions(options ModelOptions) ModelOptions {
 		options.Text.Models = normalizeTextModels(defaults.Text.Models)
 	}
 	options.Text.DefaultModel = fallbackString(options.Text.DefaultModel, defaults.Text.DefaultModel)
+	options.Text.DefaultThinkingLevel = normalizeThinkingLevel(
+		options.Text.DefaultThinkingLevel,
+		defaults.Text.DefaultThinkingLevel,
+	)
 	if !textModelExists(options.Text.Models, options.Text.DefaultModel) && len(options.Text.Models) > 0 {
 		options.Text.DefaultModel = options.Text.Models[0].Id
 	}
@@ -398,6 +405,23 @@ func normalizeModelOptions(options ModelOptions) ModelOptions {
 	}
 
 	return options
+}
+
+func isSupportedThinkingLevel(value string) bool {
+	switch value {
+	case "off", "minimal", "low", "medium", "high", "xhigh":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeThinkingLevel(value string, fallback string) string {
+	level := strings.ToLower(strings.TrimSpace(value))
+	if isSupportedThinkingLevel(level) {
+		return level
+	}
+	return strings.ToLower(strings.TrimSpace(fallback))
 }
 
 func normalizeTextModels(models []ClientModelItem) []ClientModelItem {

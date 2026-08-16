@@ -4720,6 +4720,14 @@
     "Zero retention": "Без хранения данных",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Default reasoning level": "Уровень рассуждения по умолчанию",
+    "Used when a conversation has no explicit reasoning level.": "Используется, когда для диалога явно не выбран уровень рассуждения.",
+    "Off": "Выкл.",
+    "Minimal": "Минимальный",
+    "Low": "Низкий",
+    "Medium": "Средний",
+    "High": "Высокий",
+    "Extra High": "Максимальный"
   }
 }

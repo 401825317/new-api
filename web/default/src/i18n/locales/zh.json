@@ -4787,6 +4787,14 @@
     "Extra Notes": "备注",
     "Support will reply as soon as possible.": "客服会尽快回复。",
     "Scan the QR code to contact support for account, billing, and model usage questions.": "扫码联系客服，可咨询账号、充值、模型使用等问题。",
-    "{{count}} support contacts will be removed from the list.": "将从列表中移除 {{count}} 个客服联系人。"
+    "{{count}} support contacts will be removed from the list.": "将从列表中移除 {{count}} 个客服联系人。",
+    "Default reasoning level": "默认推理等级",
+    "Used when a conversation has no explicit reasoning level.": "用于未明确选择推理等级的对话。",
+    "Off": "关闭",
+    "Minimal": "极少",
+    "Low": "低",
+    "Medium": "中",
+    "High": "高",
+    "Extra High": "极高"
   }
 }
