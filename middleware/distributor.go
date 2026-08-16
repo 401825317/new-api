@@ -101,43 +101,58 @@ func Distribute() func(c *gin.Context) {
 					}
 				}
 
-				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
-					affinityUsable := false
-					preferred, err := model.CacheGetChannel(preferredChannelID)
-					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled &&
-						channelSupportsRequestPath(preferred, c.Request.URL.Path) {
-						if usingGroup == "auto" {
-							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
-							autoGroups := service.GetUserAutoGroup(userGroup)
-							for _, g := range autoGroups {
-								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
-									selectGroup = g
-									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
-									channel = preferred
-									affinityUsable = true
-									service.MarkChannelAffinityUsed(c, g, preferred.Id)
-									break
+				continuationChannelType := preferredResponsesContinuationChannelType(c)
+				if continuationChannelType > 0 {
+					channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(&service.RetryParam{
+						Ctx:                  c,
+						ModelName:            modelRequest.Model,
+						TokenGroup:           usingGroup,
+						RequestPath:          c.Request.URL.Path,
+						PreferredChannelType: continuationChannelType,
+						Retry:                common.GetPointer(0),
+					})
+				}
+
+				if channel == nil {
+					if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
+						affinityUsable := false
+						preferred, err := model.CacheGetChannel(preferredChannelID)
+						if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled &&
+							channelSupportsRequestPath(preferred, c.Request.URL.Path) {
+							if usingGroup == "auto" {
+								userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+								autoGroups := service.GetUserAutoGroup(userGroup)
+								for _, g := range autoGroups {
+									if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
+										selectGroup = g
+										common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
+										channel = preferred
+										affinityUsable = true
+										service.MarkChannelAffinityUsed(c, g, preferred.Id)
+										break
+									}
 								}
+							} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
+								channel = preferred
+								selectGroup = usingGroup
+								affinityUsable = true
+								service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
 							}
-						} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
-							channel = preferred
-							selectGroup = usingGroup
-							affinityUsable = true
-							service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
 						}
-					}
-					if !affinityUsable && !service.ShouldKeepChannelAffinityOnChannelDisabled() {
-						service.ClearCurrentChannelAffinityCache(c)
+						if !affinityUsable && !service.ShouldKeepChannelAffinityOnChannelDisabled() {
+							service.ClearCurrentChannelAffinityCache(c)
+						}
 					}
 				}
 
 				if channel == nil {
 					channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(&service.RetryParam{
-						Ctx:         c,
-						ModelName:   modelRequest.Model,
-						TokenGroup:  usingGroup,
-						RequestPath: c.Request.URL.Path,
-						Retry:       common.GetPointer(0),
+						Ctx:                  c,
+						ModelName:            modelRequest.Model,
+						TokenGroup:           usingGroup,
+						RequestPath:          c.Request.URL.Path,
+						PreferredChannelType: continuationChannelType,
+						Retry:                common.GetPointer(0),
 					})
 					if err != nil {
 						showGroup := usingGroup
@@ -167,6 +182,57 @@ func Distribute() func(c *gin.Context) {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
 	}
+}
+
+func preferredResponsesContinuationChannelType(c *gin.Context) int {
+	if c == nil || c.Request == nil || !strings.HasPrefix(c.Request.URL.Path, "/v1/responses") {
+		return 0
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return 0
+	}
+	body, err := storage.Bytes()
+	if err != nil || !gjson.ValidBytes(body) {
+		return 0
+	}
+
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return 0
+	}
+
+	hasEncryptedState := false
+	hasDeepSeekReasoning := false
+	input.ForEach(func(_, item gjson.Result) bool {
+		if strings.TrimSpace(item.Get("encrypted_content").String()) != "" {
+			hasEncryptedState = true
+		}
+		if item.Get("type").String() != "reasoning" {
+			item.Get("content").ForEach(func(_, content gjson.Result) bool {
+				if strings.TrimSpace(content.Get("encrypted_content").String()) != "" {
+					hasEncryptedState = true
+				}
+				return true
+			})
+			return true
+		}
+		item.Get("content").ForEach(func(_, content gjson.Result) bool {
+			if strings.TrimSpace(content.Get("encrypted_content").String()) != "" {
+				hasEncryptedState = true
+			}
+			if content.Get("type").String() == "reasoning_text" {
+				hasDeepSeekReasoning = true
+			}
+			return true
+		})
+		return true
+	})
+
+	if hasDeepSeekReasoning && !hasEncryptedState {
+		return constant.ChannelTypeDeepSeek
+	}
+	return 0
 }
 
 // channelSupportsRequestPath reports whether a channel can serve the request path.

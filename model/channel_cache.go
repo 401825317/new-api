@@ -113,6 +113,28 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
+	return getRandomSatisfiedChannelFromCache(group, model, retry, requestPath, 0)
+}
+
+// GetRandomSatisfiedChannelByType selects only a matching upstream family.
+// It is used for stateful Responses continuations where a normal priority
+// winner may be unable to validate the prior provider's reasoning state.
+func GetRandomSatisfiedChannelByType(group string, model string, retry int, requestPath string, channelType int) (*Channel, error) {
+	if channelType <= 0 {
+		return GetRandomSatisfiedChannel(group, model, retry, requestPath)
+	}
+	// Production keeps the channel cache enabled. When it is explicitly disabled,
+	// preserve the ordinary DB selector rather than issuing an incompatible query.
+	if !common.MemoryCacheEnabled {
+		return nil, nil
+	}
+
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+	return getRandomSatisfiedChannelFromCache(group, model, retry, requestPath, channelType)
+}
+
+func getRandomSatisfiedChannelFromCache(group string, model string, retry int, requestPath string, requiredChannelType int) (*Channel, error) {
 
 	// First, try to find channels with the exact model name.
 	channels := filterChannelsByRequestPath(group2model2channels[group][model], requestPath)
@@ -125,6 +147,18 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 
 	if len(channels) == 0 {
 		return nil, nil
+	}
+	if requiredChannelType > 0 {
+		filtered := make([]int, 0, len(channels))
+		for _, channelID := range channels {
+			if channel, ok := channelsIDM[channelID]; ok && channel.Type == requiredChannelType {
+				filtered = append(filtered, channelID)
+			}
+		}
+		channels = filtered
+		if len(channels) == 0 {
+			return nil, nil
+		}
 	}
 
 	if len(channels) == 1 {

@@ -168,10 +168,6 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 		return nil, err
 	}
 	if removedReasoning+removedCompaction > 0 {
-		if request.Reasoning == nil {
-			request.Reasoning = &dto.Reasoning{}
-		}
-		request.Reasoning.Effort = "none"
 		if c != nil {
 			logger.LogInfo(c, fmt.Sprintf(
 				"deepseek responses fallback removed provider-bound state: reasoning=%d compaction=%d",
@@ -205,25 +201,57 @@ func stripForeignResponsesState(request *dto.OpenAIResponsesRequest) (removedRea
 
 		var itemType string
 		_ = json.Unmarshal(item["type"], &itemType)
-		if itemType != "reasoning" && itemType != "compaction" && itemType != "compaction_summary" {
-			filtered = append(filtered, rawItem)
+		if hasEncryptedContent(item) && isProviderBoundResponsesState(itemType) {
+			if itemType == "reasoning" {
+				removedReasoning++
+			} else {
+				removedCompaction++
+			}
 			continue
 		}
 
-		var encryptedContent string
-		if encryptedRaw, ok := item["encrypted_content"]; ok {
-			_ = json.Unmarshal(encryptedRaw, &encryptedContent)
+		// Current Codex clients can replay a provider-bound reasoning block inside
+		// an otherwise ordinary message content array. Keep the visible siblings,
+		// but remove only the opaque block before handing the request to DeepSeek.
+		var content []json.RawMessage
+		if err := json.Unmarshal(item["content"], &content); err == nil {
+			cleanedContent := make([]json.RawMessage, 0, len(content))
+			contentChanged := false
+			for _, rawContent := range content {
+				var contentItem map[string]json.RawMessage
+				if err := json.Unmarshal(rawContent, &contentItem); err != nil {
+					cleanedContent = append(cleanedContent, rawContent)
+					continue
+				}
+				var contentType string
+				_ = json.Unmarshal(contentItem["type"], &contentType)
+				if hasEncryptedContent(contentItem) && isProviderBoundResponsesState(contentType) {
+					if contentType == "reasoning" {
+						removedReasoning++
+					} else {
+						removedCompaction++
+					}
+					contentChanged = true
+					continue
+				}
+				cleanedContent = append(cleanedContent, rawContent)
+			}
+			if contentChanged {
+				if len(cleanedContent) == 0 && itemType == "reasoning" {
+					continue
+				}
+				encodedContent, marshalErr := json.Marshal(cleanedContent)
+				if marshalErr != nil {
+					return 0, 0, fmt.Errorf("marshal DeepSeek Responses fallback content: %w", marshalErr)
+				}
+				item["content"] = encodedContent
+				rawItem, err = json.Marshal(item)
+				if err != nil {
+					return 0, 0, fmt.Errorf("marshal DeepSeek Responses fallback item: %w", err)
+				}
+			}
 		}
-		if encryptedContent == "" {
-			filtered = append(filtered, rawItem)
-			continue
-		}
-
-		if itemType == "reasoning" {
-			removedReasoning++
-		} else {
-			removedCompaction++
-		}
+		filtered = append(filtered, rawItem)
 	}
 
 	if removedReasoning+removedCompaction == 0 {
@@ -234,6 +262,18 @@ func stripForeignResponsesState(request *dto.OpenAIResponsesRequest) (removedRea
 		return 0, 0, fmt.Errorf("marshal DeepSeek Responses fallback input: %w", err)
 	}
 	return removedReasoning, removedCompaction, nil
+}
+
+func isProviderBoundResponsesState(itemType string) bool {
+	return itemType == "reasoning" || itemType == "compaction" || itemType == "compaction_summary"
+}
+
+func hasEncryptedContent(item map[string]json.RawMessage) bool {
+	var encryptedContent string
+	if encryptedRaw, ok := item["encrypted_content"]; ok {
+		_ = json.Unmarshal(encryptedRaw, &encryptedContent)
+	}
+	return encryptedContent != ""
 }
 
 func applyDeepSeekV4ResponsesThinkingSuffix(info *relaycommon.RelayInfo, request *dto.OpenAIResponsesRequest) {
