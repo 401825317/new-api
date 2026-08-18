@@ -55,8 +55,10 @@ func NormalizeResponsesRequestBody(body []byte) ([]byte, bool, error) {
 }
 
 // NormalizeResponsesInput removes response-only fields from top-level replay
-// items and maps the legacy system role to developer. Nested tool-result JSON
-// is left untouched because its status fields are application data.
+// items and maps the legacy system role to developer. Reasoning text is output
+// state, not portable request input, so non-empty reasoning content is removed
+// while encrypted provider state is preserved. Nested tool-result JSON is left
+// untouched because its status fields are application data.
 func NormalizeResponsesInput(input json.RawMessage) (json.RawMessage, bool, error) {
 	var value any
 	if err := common.Unmarshal(input, &value); err != nil {
@@ -100,5 +102,14 @@ func normalizeResponsesInputItem(item any) bool {
 		record["role"] = "developer"
 		changed = true
 	}
+	if record["type"] == "reasoning" && hasNonEmptyContentArray(record["content"]) {
+		delete(record, "content")
+		changed = true
+	}
 	return changed
+}
+
+func hasNonEmptyContentArray(value any) bool {
+	content, ok := value.([]any)
+	return ok && len(content) > 0
 }

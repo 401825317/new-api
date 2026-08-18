@@ -78,3 +78,26 @@ func TestNormalizeResponsesRequestBodyPreservesPassThroughFields(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "done", toolOutput["status"])
 }
+
+func TestNormalizeResponsesInputStripsNonPortableReasoningContent(t *testing.T) {
+	rawInput := []byte(`[
+		{"type":"reasoning","status":"completed","encrypted_content":"opaque-state","content":[{"type":"reasoning_text","text":"do not replay me"}]},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"keep this answer"}]}
+	]`)
+
+	normalized, changed, err := dto.NormalizeResponsesInput(rawInput)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	var input []map[string]any
+	require.NoError(t, common.Unmarshal(normalized, &input))
+	_, hasReasoningStatus := input[0]["status"]
+	require.False(t, hasReasoningStatus)
+	_, hasReasoningContent := input[0]["content"]
+	require.False(t, hasReasoningContent)
+	require.Equal(t, "opaque-state", input[0]["encrypted_content"])
+
+	assistantContent, ok := input[1]["content"].([]any)
+	require.True(t, ok)
+	require.Len(t, assistantContent, 1)
+}
