@@ -2,6 +2,7 @@ package sora
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -228,9 +229,12 @@ func TestApimartBase64ImageUploadOnlyOccursInBuildRequestBody(t *testing.T) {
 	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		uploadCalls++
 		require.Equal(t, http.MethodPost, r.Method)
-		require.Equal(t, "image/png", r.Header.Get("Content-Type"))
-		require.Empty(t, r.Header.Get("x-input-media-key"))
-		got, err := io.ReadAll(r.Body)
+		require.Equal(t, "Bearer sk-test", r.Header.Get("Authorization"))
+		require.Contains(t, r.Header.Get("Content-Type"), "multipart/form-data")
+		file, _, err := r.FormFile("file")
+		require.NoError(t, err)
+		defer file.Close()
+		got, err := io.ReadAll(file)
 		require.NoError(t, err)
 		require.Equal(t, imageData, got)
 		_, _ = w.Write([]byte(`{"url":"https://media.example.com/input.png"}`))
@@ -264,6 +268,21 @@ func TestApimartBase64ImageUploadOnlyOccursInBuildRequestBody(t *testing.T) {
 	secondPayload := decodeApimartRequestPayload(t, secondBody)
 	require.Equal(t, firstPayload, secondPayload)
 	require.Equal(t, 1, uploadCalls)
+}
+
+func TestApimartBase64ImageUploadRequiresChannelKey(t *testing.T) {
+	called := false
+	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer uploadServer.Close()
+
+	_, err := uploadApimartInputMedia(context.Background(), apimartInputMediaUploadConfig{url: uploadServer.URL}, &apimartInlineImage{
+		data:     apimartTestPNG(),
+		mimeType: "image/png",
+	})
+	require.EqualError(t, err, "APIMart image upload API key is not configured")
+	require.False(t, called)
 }
 
 func TestApimartBase64ImageRejectsNonAllowlistChannelWithoutUpload(t *testing.T) {
@@ -419,6 +438,7 @@ func apimartTestRelayInfo(channelID int) *relaycommon.RelayInfo {
 		ChannelMeta: &relaycommon.ChannelMeta{
 			ChannelId:         channelID,
 			ChannelBaseUrl:    "https://api.apimart.ai",
+			ApiKey:            "sk-test",
 			UpstreamModelName: "grok-imagine-1.5-video-apimart",
 		},
 	}

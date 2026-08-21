@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -103,7 +104,8 @@ const (
 )
 
 type apimartInputMediaUploadConfig struct {
-	url string
+	url    string
+	apiKey string
 }
 
 type apimartInlineImage struct {
@@ -291,7 +293,7 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		if err := validateApimartBase64ImageInputs(imageURLs, info.ChannelId); err != nil {
 			return nil, err
 		}
-		imageURLs, uploaded, err := replaceApimartInlineImages(c.Request.Context(), imageURLs, info.ChannelId)
+		imageURLs, uploaded, err := replaceApimartInlineImages(c.Request.Context(), imageURLs, info.ChannelId, apimartChannelAPIKey(info))
 		if err != nil {
 			return nil, err
 		}
@@ -768,7 +770,7 @@ func validateApimartBase64ImageInputs(imageURLs []string, channelID int) error {
 	return err
 }
 
-func replaceApimartInlineImages(ctx context.Context, imageURLs []string, channelID int) ([]string, bool, error) {
+func replaceApimartInlineImages(ctx context.Context, imageURLs []string, channelID int, apiKey string) ([]string, bool, error) {
 	converted := append([]string(nil), imageURLs...)
 	var config apimartInputMediaUploadConfig
 	configLoaded := false
@@ -787,6 +789,7 @@ func replaceApimartInlineImages(ctx context.Context, imageURLs []string, channel
 			if err != nil {
 				return nil, false, err
 			}
+			config.apiKey = strings.TrimSpace(apiKey)
 			configLoaded = true
 		}
 		publicURL, err := uploadApimartInputMedia(ctx, config, inlineImage)
@@ -927,15 +930,36 @@ func isApimartBase64ImageChannelAllowed(channelID int) (bool, error) {
 	return false, nil
 }
 
+// uploadApimartInputMedia sends the inline image to APIMart's authenticated
+// multipart endpoint. The channel key is request-scoped and is never persisted
+// or included in error messages.
 func uploadApimartInputMedia(ctx context.Context, config apimartInputMediaUploadConfig, image *apimartInlineImage) (string, error) {
 	uploadCtx, cancel := context.WithTimeout(ctx, apimartInputMediaUploadTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(uploadCtx, http.MethodPost, config.url, bytes.NewReader(image.data))
+	if strings.TrimSpace(config.apiKey) == "" {
+		return "", fmt.Errorf("APIMart image upload API key is not configured")
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", apimartInputMediaFilename(image.mimeType))
 	if err != nil {
 		return "", fmt.Errorf("APIMart image upload request could not be created")
 	}
-	req.Header.Set("Content-Type", image.mimeType)
+	if _, err := part.Write(image.data); err != nil {
+		return "", fmt.Errorf("APIMart image upload request could not be created")
+	}
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("APIMart image upload request could not be created")
+	}
+
+	req, err := http.NewRequestWithContext(uploadCtx, http.MethodPost, config.url, &body)
+	if err != nil {
+		return "", fmt.Errorf("APIMart image upload request could not be created")
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(config.apiKey))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := (&http.Client{Timeout: apimartInputMediaUploadTimeout}).Do(req)
 	if err != nil {
@@ -957,6 +981,23 @@ func uploadApimartInputMedia(ctx context.Context, config apimartInputMediaUpload
 		return "", fmt.Errorf("APIMart image upload returned an invalid URL")
 	}
 	return publicURL, nil
+}
+
+func apimartInputMediaFilename(mimeType string) string {
+	extensions, err := mime.ExtensionsByType(strings.ToLower(strings.TrimSpace(mimeType)))
+	if err == nil && len(extensions) > 0 {
+		return "input" + extensions[0]
+	}
+	return "input.bin"
+}
+
+// apimartChannelAPIKey reads the selected channel key at the trust boundary;
+// callers use it only for the outbound Authorization header.
+func apimartChannelAPIKey(info *relaycommon.RelayInfo) string {
+	if info == nil || info.ChannelMeta == nil {
+		return ""
+	}
+	return strings.TrimSpace(info.ChannelMeta.ApiKey)
 }
 
 func isApimartHTTPURL(value string) bool {
