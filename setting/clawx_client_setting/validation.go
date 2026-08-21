@@ -16,8 +16,6 @@ var validAnnouncementLevels = map[string]bool{
 	"urgent":    true,
 }
 
-const defaultGrokVideoDurationSeconds = 6
-
 var supportedGrokVideoDurations = []int{6, 10, 15}
 
 var supportedGrokImageVideoSizes = []string{"854x480", "1280x720", "720x1280", "1920x1080"}
@@ -391,8 +389,11 @@ func normalizeModelOptions(options ModelOptions) ModelOptions {
 	if !videoModelExists(options.Video.Models, options.Video.DefaultModel) && len(options.Video.Models) > 0 {
 		options.Video.DefaultModel = options.Video.Models[0].Id
 	}
-	if isGrokVideoModel(options.Video.DefaultModel) && !isSupportedGrokVideoDuration(options.Video.DefaultDurationSeconds) {
-		options.Video.DefaultDurationSeconds = defaultGrokVideoDurationSeconds
+	selectedVideoModel := findVideoModel(options.Video.Models, options.Video.DefaultModel)
+	if selectedVideoModel != nil {
+		if options.Video.DefaultDurationSeconds <= 0 || !containsInt(selectedVideoModel.Durations, options.Video.DefaultDurationSeconds) {
+			options.Video.DefaultDurationSeconds = firstInt(selectedVideoModel.Durations, defaults.Video.DefaultDurationSeconds)
+		}
 	} else if options.Video.DefaultDurationSeconds <= 0 {
 		options.Video.DefaultDurationSeconds = defaults.Video.DefaultDurationSeconds
 	}
@@ -471,10 +472,7 @@ func normalizeVideoModels(models []ClientVideoModelItem) []ClientVideoModelItem 
 		item.Sizes = normalizeStringList(item.Sizes)
 		if isGrokVideoModel(item.Id) {
 			item.Sizes = supportedGrokVideoSizes(item.Id)
-			item.Durations = cloneSupportedGrokVideoDurations()
-			if !isSupportedGrokVideoDuration(item.DefaultDurationSeconds) {
-				item.DefaultDurationSeconds = defaultGrokVideoDurationSeconds
-			}
+			item.Durations = normalizeGrokVideoDurations(item.Durations)
 		} else {
 			item.Durations = normalizeDurationList(item.Durations)
 		}
@@ -496,6 +494,23 @@ func normalizeVideoModels(models []ClientVideoModelItem) []ClientVideoModelItem 
 		}
 		seen[item.Id] = true
 		result = append(result, item)
+	}
+	return result
+}
+
+// normalizeGrokVideoDurations keeps the administrator-selected catalog while
+// filtering values that the upstream provider cannot accept. An empty list
+// falls back to the complete provider capability list for legacy records.
+func normalizeGrokVideoDurations(values []int) []int {
+	values = normalizeDurationList(values)
+	result := make([]int, 0, len(values))
+	for _, value := range values {
+		if isSupportedGrokVideoDuration(value) {
+			result = append(result, value)
+		}
+	}
+	if len(result) == 0 {
+		return cloneSupportedGrokVideoDurations()
 	}
 	return result
 }
@@ -581,6 +596,24 @@ func imageModelExists(models []ClientImageModelItem, id string) bool {
 func videoModelExists(models []ClientVideoModelItem, id string) bool {
 	for _, item := range models {
 		if item.Id == id {
+			return true
+		}
+	}
+	return false
+}
+
+func findVideoModel(models []ClientVideoModelItem, id string) *ClientVideoModelItem {
+	for i := range models {
+		if models[i].Id == id {
+			return &models[i]
+		}
+	}
+	return nil
+}
+
+func containsInt(values []int, target int) bool {
+	for _, value := range values {
+		if value == target {
 			return true
 		}
 	}
