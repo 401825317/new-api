@@ -143,12 +143,31 @@ func TestBuildApimartPayloadNormalizesOpenAIVideoFields(t *testing.T) {
 	}, "grok-imagine-1.5-video-apimart")
 
 	require.NoError(t, err)
-	require.Equal(t, "grok-imagine-1.5-video-apimart", payload.Model)
+	require.Equal(t, "grok-imagine-1.5-video-ext", payload.Model)
 	require.Equal(t, "animate it", payload.Prompt)
 	require.Equal(t, "16:9", payload.Size)
 	require.Equal(t, 10, payload.Duration)
-	require.Equal(t, "720p", payload.Quality)
+	require.Equal(t, "720p", payload.Resolution)
 	require.Equal(t, []string{"https://example.com/a.png", "https://example.com/b.png"}, payload.ImageURLs)
+	encoded, err := common.Marshal(payload)
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), `"resolution":"720p"`)
+	require.NotContains(t, string(encoded), `"quality"`)
+}
+
+func TestApimartSizeConvertsPixelDimensionsToAspectRatios(t *testing.T) {
+	testCases := map[string]string{
+		"854x480":   "16:9",
+		"1920x1080": "16:9",
+		"720x1280":  "9:16",
+		"1024x1024": "1:1",
+		"3:2":       "3:2",
+	}
+	for input, expected := range testCases {
+		t.Run(input, func(t *testing.T) {
+			require.Equal(t, expected, apimartSize(input))
+		})
+	}
 }
 
 func TestBuildApimartPayloadMetadataCannotOverrideModel(t *testing.T) {
@@ -163,11 +182,11 @@ func TestBuildApimartPayloadMetadataCannotOverrideModel(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, "grok-imagine-1.5-video-ext", payload.Model)
-	require.Equal(t, "720p", payload.Quality)
+	require.Equal(t, "720p", payload.Resolution)
 	require.Equal(t, 10, payload.Duration)
 }
 
-func TestBuildApimartPayloadOnlyAllowsSixOrTenSecondDuration(t *testing.T) {
+func TestBuildApimartPayloadAllowsSixToFifteenSecondDuration(t *testing.T) {
 	testCases := []struct {
 		name    string
 		req     relaycommon.TaskSubmitReq
@@ -190,19 +209,24 @@ func TestBuildApimartPayloadOnlyAllowsSixOrTenSecondDuration(t *testing.T) {
 			want: 10,
 		},
 		{
+			name: "allows explicit fifteen seconds",
+			req:  relaycommon.TaskSubmitReq{Prompt: "animate it", Duration: 15},
+			want: 15,
+		},
+		{
 			name:    "rejects unsupported duration",
-			req:     relaycommon.TaskSubmitReq{Prompt: "animate it", Duration: 8},
-			wantErr: "duration must be 6 or 10 seconds",
+			req:     relaycommon.TaskSubmitReq{Prompt: "animate it", Duration: 16},
+			wantErr: "duration must be between 6 and 15 seconds",
 		},
 		{
 			name: "rejects metadata duration override",
 			req: relaycommon.TaskSubmitReq{
 				Prompt: "animate it",
 				Metadata: map[string]any{
-					"duration": 12,
+					"duration": 5,
 				},
 			},
-			wantErr: "duration must be 6 or 10 seconds",
+			wantErr: "duration must be between 6 and 15 seconds",
 		},
 	}
 
@@ -381,7 +405,7 @@ func TestApimartInputReferenceObjectPreservesQualityContract(t *testing.T) {
 	body, err := adaptor.BuildRequestBody(context, info)
 	require.NoError(t, err)
 	payload := decodeApimartRequestPayload(t, body)
-	require.Equal(t, "720p", payload.Quality)
+	require.Equal(t, "720p", payload.Resolution)
 	require.Equal(t, []string{"https://media.example.com/input.png"}, payload.ImageURLs)
 	require.Equal(t, 1, uploadCalls)
 }

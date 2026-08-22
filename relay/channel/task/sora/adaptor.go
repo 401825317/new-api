@@ -87,12 +87,12 @@ type apimartAPIError struct {
 }
 
 type apimartRequestPayload struct {
-	Model     string   `json:"model"`
-	Prompt    string   `json:"prompt"`
-	Size      string   `json:"size,omitempty"`
-	Duration  int      `json:"duration,omitempty"`
-	Quality   string   `json:"quality,omitempty"`
-	ImageURLs []string `json:"image_urls,omitempty"`
+	Model      string   `json:"model"`
+	Prompt     string   `json:"prompt"`
+	Size       string   `json:"size,omitempty"`
+	Duration   int      `json:"duration,omitempty"`
+	Resolution string   `json:"resolution,omitempty"`
+	ImageURLs  []string `json:"image_urls,omitempty"`
 }
 
 const (
@@ -235,7 +235,7 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 			"seconds": float64(payload.Duration),
 			"quality": 1,
 		}
-		if strings.ToLower(strings.TrimSpace(payload.Quality)) == "720p" {
+		if strings.ToLower(strings.TrimSpace(payload.Resolution)) == "720p" {
 			ratios["quality"] = 1.5
 		}
 		return ratios
@@ -695,28 +695,29 @@ func buildApimartPayload(req relaycommon.TaskSubmitReq, modelName string) (*apim
 		return nil, err
 	}
 	payload := &apimartRequestPayload{
-		Model:     strings.TrimSpace(modelName),
-		Prompt:    req.Prompt,
-		Size:      apimartSize(req.Size),
-		Duration:  duration,
-		Quality:   taskcommon.DefaultString(strings.TrimSpace(req.Quality), "480p"),
-		ImageURLs: apimartImageURLs(req),
+		Model:      normalizeApimartModelName(modelName),
+		Prompt:     req.Prompt,
+		Size:       apimartSize(req.Size),
+		Duration:   duration,
+		Resolution: taskcommon.DefaultString(strings.TrimSpace(req.Quality), "480p"),
+		ImageURLs:  apimartImageURLs(req),
 	}
-	if err := taskcommon.UnmarshalMetadata(req.Metadata, payload); err != nil {
+	metadata := apimartMetadata(req.Metadata)
+	if err := taskcommon.UnmarshalMetadata(metadata, payload); err != nil {
 		return nil, err
 	}
-	payload.Model = strings.TrimSpace(modelName)
+	payload.Model = normalizeApimartModelName(modelName)
 	if payload.Model == "" {
-		payload.Model = "grok-imagine-1.5-video-apimart"
+		payload.Model = "grok-imagine-1.5-video-ext"
 	}
 	if payload.Size == "" {
 		payload.Size = "16:9"
 	}
-	if payload.Quality == "" {
-		payload.Quality = "480p"
+	if payload.Resolution == "" {
+		payload.Resolution = "480p"
 	}
-	if payload.Duration != 6 && payload.Duration != 10 {
-		return nil, fmt.Errorf("duration must be 6 or 10 seconds")
+	if payload.Duration < 6 || payload.Duration > 15 {
+		return nil, fmt.Errorf("duration must be between 6 and 15 seconds")
 	}
 	if len(payload.ImageURLs) > 7 {
 		return nil, fmt.Errorf("image_urls supports at most 7 images")
@@ -740,18 +741,36 @@ func apimartDuration(req relaycommon.TaskSubmitReq) (int, error) {
 
 func apimartSize(size string) string {
 	switch strings.TrimSpace(size) {
-	case "1280x720", "1792x1024":
+	case "854x480", "1280x720", "1920x1080", "1792x1024":
 		return "16:9"
-	case "720x1280", "1024x1792":
+	case "720x1280", "1080x1920", "1024x1792":
 		return "9:16"
 	case "1024x1024":
 		return "1:1"
+	case "16:9", "9:16", "1:1", "3:2", "2:3":
+		return strings.TrimSpace(size)
 	default:
 		if strings.TrimSpace(size) == "" {
 			return "16:9"
 		}
 		return strings.TrimSpace(size)
 	}
+}
+
+func apimartMetadata(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return metadata
+	}
+	result := make(map[string]any, len(metadata)+1)
+	for key, value := range metadata {
+		result[key] = value
+	}
+	if _, hasResolution := result["resolution"]; !hasResolution {
+		if quality, hasQuality := result["quality"]; hasQuality {
+			result["resolution"] = quality
+		}
+	}
+	return result
 }
 
 func apimartImageURLs(req relaycommon.TaskSubmitReq) []string {
@@ -1216,6 +1235,15 @@ func isApimartModel(modelName string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func normalizeApimartModelName(modelName string) string {
+	switch strings.TrimSpace(modelName) {
+	case "", "grok-imagine-1.5-video-apimart":
+		return "grok-imagine-1.5-video-ext"
+	default:
+		return strings.TrimSpace(modelName)
 	}
 }
 

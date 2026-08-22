@@ -88,28 +88,28 @@ func TestNormalizeSupportContactsFiltersDisabledAndEmptyQRCode(t *testing.T) {
 	}
 }
 
-func TestGetModelOptionsPublishesSupportedGrokVideoCapabilities(t *testing.T) {
+func TestGetModelOptionsKeepsConfiguredGrokVideoDurations(t *testing.T) {
 	original := clientSetting
 	t.Cleanup(func() {
 		clientSetting = original
 	})
-	clientSetting.ModelOptions = `{"video":{"defaultModel":"grok-image-video","defaultSize":"1280x720","defaultDurationSeconds":15,"models":[{"id":"grok-image-video","sizes":["854x480","1280x720","720x1280"],"durations":[6,10,15],"defaultSize":"1280x720","defaultDurationSeconds":15},{"id":"grok-video-1.5","sizes":["1280x720"],"durations":[15],"defaultSize":"1280x720","defaultDurationSeconds":15},{"id":"other-video","sizes":["640x360"],"durations":[5,15],"defaultDurationSeconds":15}]}}`
+	clientSetting.ModelOptions = `{"video":{"defaultModel":"grok-image-video","defaultSize":"1280x720","defaultDurationSeconds":10,"models":[{"id":"grok-image-video","sizes":["854x480","1280x720","720x1280"],"durations":[6,10],"defaultSize":"1280x720","defaultDurationSeconds":10},{"id":"grok-video-1.5","sizes":["1280x720"],"durations":[15],"defaultSize":"1280x720","defaultDurationSeconds":15},{"id":"other-video","sizes":["640x360"],"durations":[5,15],"defaultDurationSeconds":15}]}}`
 
 	options := GetModelOptions()
 	require.Len(t, options.Video.Models, 3)
-	assert.Equal(t, 6, options.Video.DefaultDurationSeconds)
+	assert.Equal(t, 10, options.Video.DefaultDurationSeconds)
 	assert.Equal(t, []int{6, 10}, options.Video.Models[0].Durations)
 	assert.Equal(t, []string{"854x480", "1280x720", "720x1280", "1920x1080"}, options.Video.Models[0].Sizes)
-	assert.Equal(t, 6, options.Video.Models[0].DefaultDurationSeconds)
-	assert.Equal(t, []int{6, 10}, options.Video.Models[1].Durations)
+	assert.Equal(t, 10, options.Video.Models[0].DefaultDurationSeconds)
+	assert.Equal(t, []int{15}, options.Video.Models[1].Durations)
 	assert.Equal(t, []string{"854x480", "1280x720", "720x1280", "1920x1080"}, options.Video.Models[1].Sizes)
-	assert.Equal(t, 6, options.Video.Models[1].DefaultDurationSeconds)
+	assert.Equal(t, 15, options.Video.Models[1].DefaultDurationSeconds)
 	assert.Equal(t, []int{5, 15}, options.Video.Models[2].Durations)
 	assert.Equal(t, []string{"640x360"}, options.Video.Models[2].Sizes)
 	assert.Equal(t, 15, options.Video.Models[2].DefaultDurationSeconds)
 }
 
-func TestDefaultModelOptionsNormalizeToSupportedGrokVideoCapabilities(t *testing.T) {
+func TestDefaultModelOptionsKeepConfiguredGrokVideoDurations(t *testing.T) {
 	var options ModelOptions
 	require.NoError(t, common.UnmarshalJsonStr(defaultModelOptionsJSON, &options))
 	options = normalizeModelOptions(options)
@@ -127,11 +127,14 @@ func TestValidateModelOptionsRejectsUnsupportedGrokVideoDurations(t *testing.T) 
 	invalid := `{"video":{"defaultModel":"grok-image-video","defaultDurationSeconds":8,"models":[{"id":"grok-image-video","durations":[6,8,10,15],"defaultDurationSeconds":8}]}}`
 	require.Error(t, ValidateClientSettings(invalid, "ModelOptions"))
 
-	invalidFifteenSeconds := `{"video":{"defaultModel":"grok-image-video","defaultDurationSeconds":15,"models":[{"id":"grok-image-video","durations":[6,10,15],"defaultDurationSeconds":15}]}}`
-	require.Error(t, ValidateClientSettings(invalidFifteenSeconds, "ModelOptions"))
+	validFifteenSeconds := `{"video":{"defaultModel":"grok-image-video","defaultDurationSeconds":15,"models":[{"id":"grok-image-video","durations":[6,10,15],"defaultDurationSeconds":15}]}}`
+	require.NoError(t, ValidateClientSettings(validFifteenSeconds, "ModelOptions"))
 
 	valid := `{"video":{"defaultModel":"grok-image-video","defaultDurationSeconds":10,"models":[{"id":"grok-image-video","durations":[6,10],"defaultDurationSeconds":10}]}}`
 	require.NoError(t, ValidateClientSettings(valid, "ModelOptions"))
+
+	configured := `{"video":{"defaultModel":"grok-image-video","defaultDurationSeconds":10,"models":[{"id":"grok-image-video","durations":[6,10],"defaultDurationSeconds":10}]}}`
+	require.NoError(t, ValidateClientSettings(configured, "ModelOptions"))
 }
 
 func TestModelOptionsDefaultThinkingLevelContract(t *testing.T) {

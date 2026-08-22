@@ -140,6 +140,9 @@ func GetAndValidateResponsesRequest(c *gin.Context) (*dto.OpenAIResponsesRequest
 	if request.Input == nil {
 		return nil, errors.New("input is required")
 	}
+	if err := request.NormalizeInputForUpstream(); err != nil {
+		return nil, err
+	}
 	if exceedsMaxTokensLimit(request.MaxOutputTokens) {
 		return nil, errors.New("max_output_tokens is invalid")
 	}
