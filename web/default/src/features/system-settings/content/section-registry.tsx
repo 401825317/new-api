@@ -23,6 +23,7 @@ import { ApiInfoSection } from './api-info-section'
 import { ChatSettingsSection } from './chat-settings-section'
 import { ClawXClientSection } from './clawx-client-section'
 import { ClawXModelOptionsSection } from './clawx-model-options-section'
+import { ClawXRuntimeControlsSection } from './clawx-runtime-controls-section'
 import { DashboardSection } from './dashboard-section'
 import { DrawingSettingsSection } from './drawing-settings-section'
 import { FAQSection } from './faq-section'
@@ -92,6 +93,17 @@ const CONTENT_SECTIONS = [
       <ClawXModelOptionsSection
         key={settings['clawx_client_setting.model_options']}
         data={settings['clawx_client_setting.model_options']}
+      />
+    ),
+  },
+  {
+    id: 'clawx-runtime-controls',
+    titleKey: 'UClaw Runtime Controls',
+    build: (settings: ContentSettings) => (
+      <ClawXRuntimeControlsSection
+        key={`${settings['clawx_client_setting.observability']}:${settings['clawx_client_setting.features']}`}
+        observabilityData={settings['clawx_client_setting.observability']}
+        featuresData={settings['clawx_client_setting.features']}
       />
     ),
   },

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -19,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel"
 	taskcommon "github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
@@ -99,11 +101,38 @@ const (
 
 	apimartInputMediaMaxBytes      = 20 * 1024 * 1024
 	apimartInputMediaUploadTimeout = 15 * time.Second
+	apimartInputMediaResponseLimit = 64 * 1024
 	apimartRequestBodyContextKey   = "apimart_prepared_request_body"
+	apimartUploadFailureContextKey = "apimart_upload_failure"
 )
 
 type apimartInputMediaUploadConfig struct {
 	url string
+}
+
+type apimartInputMediaUploadError struct {
+	statusCode    int
+	requestID     string
+	contentType   string
+	responseShape string
+	kind          string
+}
+
+func (e *apimartInputMediaUploadError) Error() string {
+	if e == nil {
+		return "APIMart image upload failed"
+	}
+	if e.statusCode != 0 {
+		return fmt.Sprintf("APIMart image upload failed with status %d", e.statusCode)
+	}
+	switch e.kind {
+	case "response_too_large":
+		return "APIMart image upload returned an oversized response"
+	case "invalid_url":
+		return "APIMart image upload returned an invalid URL"
+	default:
+		return "APIMart image upload returned an invalid response"
+	}
 }
 
 type apimartInlineImage struct {
@@ -262,6 +291,9 @@ func (a *TaskAdaptor) BuildRequestHeader(c *gin.Context, req *http.Request, info
 
 func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayInfo) (io.Reader, error) {
 	if isApimartRelay(info, upstreamModelName(info)) {
+		if cachedFailure, ok := getCachedApimartUploadFailure(c); ok {
+			return nil, cachedFailure
+		}
 		if cachedBody, ok := getCachedApimartRequestBody(c, info.ChannelId); ok {
 			return bytes.NewReader(cachedBody), nil
 		}
@@ -291,8 +323,12 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		if err := validateApimartBase64ImageInputs(imageURLs, info.ChannelId); err != nil {
 			return nil, err
 		}
-		imageURLs, uploaded, err := replaceApimartInlineImages(c.Request.Context(), imageURLs, info.ChannelId)
+		imageURLs, uploaded, err := replaceApimartInlineImages(c.Request.Context(), imageURLs, info.ChannelId, info.ChannelSetting.Proxy)
 		if err != nil {
+			var uploadErr *apimartInputMediaUploadError
+			if errors.As(err, &uploadErr) && uploadErr.statusCode == http.StatusNotFound {
+				cacheApimartUploadFailure(c, uploadErr)
+			}
 			return nil, err
 		}
 		if uploaded {
@@ -768,7 +804,7 @@ func validateApimartBase64ImageInputs(imageURLs []string, channelID int) error {
 	return err
 }
 
-func replaceApimartInlineImages(ctx context.Context, imageURLs []string, channelID int) ([]string, bool, error) {
+func replaceApimartInlineImages(ctx context.Context, imageURLs []string, channelID int, proxy string) ([]string, bool, error) {
 	converted := append([]string(nil), imageURLs...)
 	var config apimartInputMediaUploadConfig
 	configLoaded := false
@@ -789,7 +825,7 @@ func replaceApimartInlineImages(ctx context.Context, imageURLs []string, channel
 			}
 			configLoaded = true
 		}
-		publicURL, err := uploadApimartInputMedia(ctx, config, inlineImage)
+		publicURL, err := uploadApimartInputMedia(ctx, config, inlineImage, proxy)
 		if err != nil {
 			return nil, false, err
 		}
@@ -927,7 +963,7 @@ func isApimartBase64ImageChannelAllowed(channelID int) (bool, error) {
 	return false, nil
 }
 
-func uploadApimartInputMedia(ctx context.Context, config apimartInputMediaUploadConfig, image *apimartInlineImage) (string, error) {
+func uploadApimartInputMedia(ctx context.Context, config apimartInputMediaUploadConfig, image *apimartInlineImage, proxy string) (string, error) {
 	uploadCtx, cancel := context.WithTimeout(ctx, apimartInputMediaUploadTimeout)
 	defer cancel()
 
@@ -937,26 +973,192 @@ func uploadApimartInputMedia(ctx context.Context, config apimartInputMediaUpload
 	}
 	req.Header.Set("Content-Type", image.mimeType)
 
-	resp, err := (&http.Client{Timeout: apimartInputMediaUploadTimeout}).Do(req)
+	client, err := service.GetHttpClientWithProxy(strings.TrimSpace(proxy))
 	if err != nil {
+		logApimartInputMediaUploadFailure(uploadCtx, nil, nil, false)
+		return "", fmt.Errorf("APIMart image upload failed")
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		logApimartInputMediaUploadFailure(uploadCtx, nil, nil, false)
 		return "", fmt.Errorf("APIMart image upload failed")
 	}
 	defer resp.Body.Close()
+
+	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, apimartInputMediaResponseLimit+1))
+	tooLarge := len(responseBody) > apimartInputMediaResponseLimit
+	if readErr != nil {
+		logApimartInputMediaUploadFailure(uploadCtx, resp, responseBody, false)
+		return "", &apimartInputMediaUploadError{
+			statusCode:    resp.StatusCode,
+			requestID:     apimartUploadResponseRequestID(resp.Header),
+			contentType:   apimartUploadResponseContentType(resp.Header),
+			responseShape: "read_error",
+			kind:          "invalid_response",
+		}
+	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("APIMart image upload failed with status %d", resp.StatusCode)
+		logApimartInputMediaUploadFailure(uploadCtx, resp, responseBody, tooLarge)
+		return "", &apimartInputMediaUploadError{
+			statusCode:    resp.StatusCode,
+			requestID:     apimartUploadResponseRequestID(resp.Header),
+			contentType:   apimartUploadResponseContentType(resp.Header),
+			responseShape: apimartUploadResponseShape(responseBody, tooLarge),
+		}
+	}
+	if tooLarge {
+		logApimartInputMediaUploadFailure(uploadCtx, resp, responseBody, true)
+		return "", &apimartInputMediaUploadError{
+			statusCode:    resp.StatusCode,
+			requestID:     apimartUploadResponseRequestID(resp.Header),
+			contentType:   apimartUploadResponseContentType(resp.Header),
+			responseShape: "body_too_large",
+			kind:          "response_too_large",
+		}
 	}
 
 	var response struct {
 		URL string `json:"url"`
 	}
-	if err := common.DecodeJson(resp.Body, &response); err != nil {
-		return "", fmt.Errorf("APIMart image upload returned an invalid response")
+	if err := common.Unmarshal(responseBody, &response); err != nil {
+		logApimartInputMediaUploadFailure(uploadCtx, resp, responseBody, false)
+		return "", &apimartInputMediaUploadError{
+			statusCode:    resp.StatusCode,
+			requestID:     apimartUploadResponseRequestID(resp.Header),
+			contentType:   apimartUploadResponseContentType(resp.Header),
+			responseShape: apimartUploadResponseShape(responseBody, false),
+			kind:          "invalid_response",
+		}
 	}
 	publicURL := strings.TrimSpace(response.URL)
 	if !isApimartHTTPURL(publicURL) {
-		return "", fmt.Errorf("APIMart image upload returned an invalid URL")
+		logApimartInputMediaUploadFailure(uploadCtx, resp, responseBody, false)
+		return "", &apimartInputMediaUploadError{
+			statusCode:    resp.StatusCode,
+			requestID:     apimartUploadResponseRequestID(resp.Header),
+			contentType:   apimartUploadResponseContentType(resp.Header),
+			responseShape: apimartUploadResponseShape(responseBody, false),
+			kind:          "invalid_url",
+		}
 	}
 	return publicURL, nil
+}
+
+func logApimartInputMediaUploadFailure(ctx context.Context, resp *http.Response, body []byte, tooLarge bool) {
+	statusCode := 0
+	contentType := "missing"
+	requestID := "missing"
+	if resp != nil {
+		statusCode = resp.StatusCode
+		contentType = apimartUploadResponseContentType(resp.Header)
+		requestID = apimartUploadResponseRequestID(resp.Header)
+	}
+	responseShape := apimartUploadResponseShape(body, tooLarge)
+	logger.LogWarn(ctx, fmt.Sprintf(
+		"apimart_input_media_upload_failed status=%d upstream_request_id=%s content_type=%s response_shape=%s",
+		statusCode, requestID, contentType, responseShape,
+	))
+}
+
+func apimartUploadResponseContentType(headers http.Header) string {
+	if headers == nil {
+		return "missing"
+	}
+	raw := strings.TrimSpace(headers.Get("Content-Type"))
+	if raw == "" {
+		return "missing"
+	}
+	mediaType, _, err := mime.ParseMediaType(raw)
+	if err != nil {
+		return "invalid"
+	}
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	if len(mediaType) == 0 || len(mediaType) > 64 {
+		return "other"
+	}
+	return mediaType
+}
+
+func apimartUploadResponseRequestID(headers http.Header) string {
+	if headers == nil {
+		return "missing"
+	}
+	for _, headerName := range []string{"X-Request-Id", "X-OpenAI-Request-Id", "X-Amzn-RequestId"} {
+		if requestID := sanitizeApimartUploadRequestID(headers.Get(headerName)); requestID != "" {
+			return requestID
+		}
+	}
+	return "missing"
+}
+
+func sanitizeApimartUploadRequestID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return ""
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' || char == ':' {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func apimartUploadResponseShape(body []byte, tooLarge bool) string {
+	if tooLarge {
+		return "body_too_large"
+	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return "empty"
+	}
+	var value any
+	if err := common.Unmarshal(trimmed, &value); err != nil {
+		return "non_json"
+	}
+	switch value.(type) {
+	case map[string]any:
+		return "json_object"
+	case []any:
+		return "json_array"
+	case string:
+		return "json_string"
+	case bool:
+		return "json_boolean"
+	case float64:
+		return "json_number"
+	case nil:
+		return "json_null"
+	default:
+		return "json_value"
+	}
+}
+
+func getCachedApimartUploadFailure(c *gin.Context) (error, bool) {
+	if c == nil {
+		return nil, false
+	}
+	value, exists := c.Get(apimartUploadFailureContextKey)
+	if !exists {
+		return nil, false
+	}
+	failure, ok := value.(*apimartInputMediaUploadError)
+	if !ok || failure == nil {
+		return nil, false
+	}
+	return failure, true
+}
+
+func cacheApimartUploadFailure(c *gin.Context, failure *apimartInputMediaUploadError) {
+	if c == nil || failure == nil {
+		return
+	}
+	c.Set(apimartUploadFailureContextKey, failure)
 }
 
 func isApimartHTTPURL(value string) bool {

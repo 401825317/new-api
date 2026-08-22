@@ -225,15 +225,22 @@ export interface LogOtherData {
     x_oneapi_request_id?: string
     uclaw_client?: string
     uclaw_version?: string
+    uclaw_commit?: string
+    uclaw_build_id?: string
     uclaw_platform?: string
     uclaw_arch?: string
+    uclaw_channel?: string
     uclaw_mode?: string
+    uclaw_request_id?: string
     uclaw_provider?: string
     uclaw_session_id?: string
     clawx_client?: string
     clawx_version?: string
+    clawx_commit?: string
+    clawx_build_id?: string
     clawx_platform?: string
     clawx_arch?: string
+    clawx_channel?: string
     clawx_mode?: string
     clawx_provider?: string
     clawx_session_id?: string
@@ -362,6 +369,35 @@ export interface GetLogStatsResponse {
   success: boolean
   message?: string
   data?: LogStatistics
+}
+
+export interface UClawVersionUsageStat {
+  version: string
+  commit: string
+  build_id: string
+  channel: string
+  mode: string
+  request_count: number
+  success_count: number
+  error_count: number
+  success_rate: number
+  error_rate: number
+  average_latency_ms: number
+  p95_latency_ms: number
+}
+
+export interface UClawVersionUsageSummary {
+  start_timestamp: number
+  end_timestamp: number
+  total_requests: number
+  truncated: boolean
+  items: UClawVersionUsageStat[]
+}
+
+export interface UClawVersionUsageResponse {
+  success: boolean
+  message?: string
+  data?: UClawVersionUsageSummary
 }
 
 // ============================================================================

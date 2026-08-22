@@ -7,8 +7,10 @@ const (
 	ContextKeyPromptTokens    ContextKey = "prompt_tokens"
 	ContextKeyEstimatedTokens ContextKey = "estimated_tokens"
 
-	ContextKeyOriginalModel    ContextKey = "original_model"
-	ContextKeyRequestStartTime ContextKey = "request_start_time"
+	ContextKeyOriginalModel              ContextKey = "original_model"
+	ContextKeyUClawArtifactAlias         ContextKey = "uclaw_artifact_alias"
+	ContextKeyUClawArtifactUpstreamModel ContextKey = "uclaw_artifact_upstream_model"
+	ContextKeyRequestStartTime           ContextKey = "request_start_time"
 
 	/* token related keys */
 	ContextKeyTokenUnlimited         ContextKey = "token_unlimited_quota"

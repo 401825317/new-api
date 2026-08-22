@@ -122,6 +122,35 @@ func GetLogsStat(c *gin.Context) {
 	return
 }
 
+func GetUClawVersionUsageStats(c *gin.Context) {
+	now := common.GetTimestamp()
+	startTimestamp := parsePositiveInt64Query(c.Query("start_timestamp"))
+	endTimestamp := parsePositiveInt64Query(c.Query("end_timestamp"))
+	if endTimestamp == 0 {
+		endTimestamp = now
+	}
+	if startTimestamp == 0 {
+		startTimestamp = endTimestamp - 24*60*60
+	}
+	if startTimestamp > endTimestamp {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "start_timestamp must not exceed end_timestamp"})
+		return
+	}
+	if endTimestamp-startTimestamp > 31*24*60*60 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "time range must not exceed 31 days"})
+		return
+	}
+	summary, err := model.GetUClawVersionUsageSummary(model.UClawVersionUsageFilter{
+		StartTimestamp: startTimestamp,
+		EndTimestamp:   endTimestamp,
+	})
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, summary)
+}
+
 func GetLogsSelfStat(c *gin.Context) {
 	username := c.GetString("username")
 	logType, _ := strconv.Atoi(c.Query("type"))

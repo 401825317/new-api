@@ -350,6 +350,97 @@ func TestApimartBase64ImageValidationAndUploadFailuresAreSafe(t *testing.T) {
 	})
 }
 
+func TestApimartInputReferenceObjectPreservesQualityContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	imageData := apimartTestPNG()
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(imageData)
+	uploadCalls := 0
+	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uploadCalls++
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "image/png", r.Header.Get("Content-Type"))
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		require.Equal(t, imageData, body)
+		_, _ = w.Write([]byte(`{"url":"https://media.example.com/input.png"}`))
+	}))
+	defer uploadServer.Close()
+	configureApimartInputMedia(t, "18", uploadServer.URL)
+
+	context := apimartTestContextFromBody(t, []byte(fmt.Sprintf(`{
+		"model":"grok-image-video",
+		"prompt":"animate the reference image",
+		"quality":"720p",
+		"resolution":"720p",
+		"input_reference":{"image_url":%q}
+	}`, dataURL)))
+	info := apimartTestRelayInfo(18)
+	adaptor := &TaskAdaptor{}
+
+	require.Nil(t, adaptor.ValidateRequestAndSetAction(context, info))
+	body, err := adaptor.BuildRequestBody(context, info)
+	require.NoError(t, err)
+	payload := decodeApimartRequestPayload(t, body)
+	require.Equal(t, "720p", payload.Quality)
+	require.Equal(t, []string{"https://media.example.com/input.png"}, payload.ImageURLs)
+	require.Equal(t, 1, uploadCalls)
+}
+
+func TestApimartInputMedia404IsCachedAndLoggedWithoutResponseBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	imageData := apimartTestPNG()
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(imageData)
+	responseBody := `{"error":"sensitive response body must not be logged"}`
+	uploadCalls := 0
+	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uploadCalls++
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("X-Request-ID", "req-404")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(responseBody))
+	}))
+	defer uploadServer.Close()
+	configureApimartInputMedia(t, "18,19", uploadServer.URL)
+
+	var logBuffer bytes.Buffer
+	common.LogWriterMu.Lock()
+	oldWriter := gin.DefaultErrorWriter
+	gin.DefaultErrorWriter = &logBuffer
+	common.LogWriterMu.Unlock()
+	t.Cleanup(func() {
+		common.LogWriterMu.Lock()
+		gin.DefaultErrorWriter = oldWriter
+		common.LogWriterMu.Unlock()
+	})
+
+	context := apimartTestContext(t, relaycommon.TaskSubmitReq{
+		Model:     "grok-image-video",
+		Prompt:    "animate the reference image",
+		ImageURLs: []string{dataURL},
+	})
+	context.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:     "grok-image-video",
+		Prompt:    "animate the reference image",
+		ImageURLs: []string{dataURL},
+	})
+
+	firstBody, firstErr := (&TaskAdaptor{}).BuildRequestBody(context, apimartTestRelayInfo(18))
+	require.Nil(t, firstBody)
+	require.EqualError(t, firstErr, "APIMart image upload failed with status 404")
+	secondBody, secondErr := (&TaskAdaptor{}).BuildRequestBody(context, apimartTestRelayInfo(19))
+	require.Nil(t, secondBody)
+	require.EqualError(t, secondErr, "APIMart image upload failed with status 404")
+	require.Equal(t, 1, uploadCalls)
+
+	logs := logBuffer.String()
+	require.Contains(t, logs, "status=404")
+	require.Contains(t, logs, "upstream_request_id=req-404")
+	require.Contains(t, logs, "content_type=application/json")
+	require.Contains(t, logs, "response_shape=json_object")
+	require.NotContains(t, logs, responseBody)
+	require.NotContains(t, logs, dataURL)
+}
+
 func TestBuildApimartRequestBodyUploadsEveryInlineImageAndPreservesURLs(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	imageData := apimartTestPNG()
@@ -405,6 +496,11 @@ func apimartTestContext(t *testing.T, req relaycommon.TaskSubmitReq) *gin.Contex
 	t.Helper()
 	body, err := common.Marshal(req)
 	require.NoError(t, err)
+	return apimartTestContextFromBody(t, body)
+}
+
+func apimartTestContextFromBody(t *testing.T, body []byte) *gin.Context {
+	t.Helper()
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
 	context.Request = httptest.NewRequest(http.MethodPost, "http://zz-cn.test/v1/videos", bytes.NewReader(body))

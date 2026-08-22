@@ -1,8 +1,11 @@
 package clawx_client_setting
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -18,7 +21,11 @@ var validAnnouncementLevels = map[string]bool{
 
 const defaultGrokVideoDurationSeconds = 6
 
-var supportedGrokVideoDurations = []int{6, 10, 15}
+var versionedArtifactAliasPattern = regexp.MustCompile(`^uclaw-artifact-v[1-9][0-9]*$`)
+var versionIdentifierPattern = regexp.MustCompile(`^v[1-9][0-9]*$`)
+var uclawInstallationIDPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+var supportedGrokVideoDurations = []int{6, 10}
 
 var supportedGrokImageVideoSizes = []string{"854x480", "1280x720", "720x1280", "1920x1080"}
 
@@ -36,9 +43,195 @@ func ValidateClientSettings(settingsStr string, settingType string) error {
 		return validateSupport(settingsStr)
 	case "ModelOptions":
 		return validateModelOptions(settingsStr)
+	case "Observability":
+		return validateObservability(settingsStr)
+	case "Features":
+		return validateFeatures(settingsStr)
 	default:
 		return fmt.Errorf("未知的 ClawX 客户端设置类型：%s", settingType)
 	}
+}
+
+func validateSampleRate(value float64, field string) error {
+	if value < 0 || value > 1 {
+		return fmt.Errorf("%s must be between 0 and 1", field)
+	}
+	return nil
+}
+
+func validateRolloutPercentage(value float64, field string) error {
+	if value < 0 || value > 100 {
+		return fmt.Errorf("%s rolloutPercentage must be between 0 and 100", field)
+	}
+	return nil
+}
+
+func defaultObservability() Observability {
+	return Observability{
+		Enabled:                false,
+		RolloutPercentage:      0,
+		TunnelPath:             observabilityTunnelPath,
+		CrashSampleRate:        1,
+		HandledErrorSampleRate: 0.2,
+		TracesSampleRate:       0.05,
+		ArtifactSampleRate:     0.2,
+		MaxEventsPerHour:       observabilityMaxEventsPerHour,
+	}
+}
+
+func parseObservability(settingsStr string) (Observability, error) {
+	settings := defaultObservability()
+	if err := common.UnmarshalJsonStr(settingsStr, &settings); err != nil {
+		return Observability{}, fmt.Errorf("ClawX observability config format error: %s", err.Error())
+	}
+	settings.SentryDsn = strings.TrimSpace(settings.SentryDsn)
+	settings.TunnelPath = fallbackString(settings.TunnelPath, observabilityTunnelPath)
+	return settings, nil
+}
+
+func validateSentryDSN(rawDSN string) error {
+	if strings.TrimSpace(rawDSN) == "" {
+		return nil
+	}
+	if err := validateHTTPURL(rawDSN, "Sentry DSN"); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(strings.TrimSpace(rawDSN))
+	if err != nil {
+		return fmt.Errorf("Sentry DSN URL format is invalid")
+	}
+	if parsed.User == nil {
+		return fmt.Errorf("Sentry DSN must include a public key")
+	}
+	if _, hasPassword := parsed.User.Password(); hasPassword {
+		return fmt.Errorf("Sentry DSN must not include a password or secret")
+	}
+	if strings.TrimSpace(parsed.User.Username()) == "" {
+		return fmt.Errorf("Sentry DSN must include a public key")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("Sentry DSN must not include a query or fragment")
+	}
+	pathSegments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	projectID := pathSegments[len(pathSegments)-1]
+	decodedProjectID, err := url.PathUnescape(projectID)
+	if err != nil || strings.TrimSpace(decodedProjectID) == "" || strings.Contains(decodedProjectID, "/") || decodedProjectID == "." || decodedProjectID == ".." {
+		return fmt.Errorf("Sentry DSN must include a project ID")
+	}
+	return nil
+}
+
+func validateObservabilityValue(settings Observability) error {
+	if settings.Enabled && strings.TrimSpace(settings.SentryDsn) == "" {
+		return fmt.Errorf("Sentry DSN is required when observability is enabled")
+	}
+	if err := validateSentryDSN(settings.SentryDsn); err != nil {
+		return err
+	}
+	if err := validateRolloutPercentage(settings.RolloutPercentage, "observability"); err != nil {
+		return err
+	}
+	if strings.TrimSpace(settings.TunnelPath) != observabilityTunnelPath {
+		return fmt.Errorf("observability tunnelPath must be %s", observabilityTunnelPath)
+	}
+	for _, sample := range []struct {
+		value float64
+		field string
+	}{
+		{settings.CrashSampleRate, "crashSampleRate"},
+		{settings.HandledErrorSampleRate, "handledErrorSampleRate"},
+		{settings.TracesSampleRate, "tracesSampleRate"},
+		{settings.ArtifactSampleRate, "artifactSampleRate"},
+	} {
+		if err := validateSampleRate(sample.value, sample.field); err != nil {
+			return err
+		}
+	}
+	if settings.MaxEventsPerHour < 1 || settings.MaxEventsPerHour > observabilityMaxEventsPerHour {
+		return fmt.Errorf("maxEventsPerHour must be between 1 and %d", observabilityMaxEventsPerHour)
+	}
+	return nil
+}
+
+func validateObservability(settingsStr string) error {
+	settings, err := parseObservability(settingsStr)
+	if err != nil {
+		return err
+	}
+	return validateObservabilityValue(settings)
+}
+
+func validateFeatureGate(gate FeatureGate, field string) error {
+	if err := validateRolloutPercentage(gate.RolloutPercentage, field); err != nil {
+		return err
+	}
+	seenUserIds := make(map[int]struct{}, len(gate.InternalUserIds))
+	for _, userId := range gate.InternalUserIds {
+		if userId <= 0 {
+			return fmt.Errorf("%s internalUserIds must contain positive user IDs", field)
+		}
+		if _, exists := seenUserIds[userId]; exists {
+			return fmt.Errorf("%s internalUserIds must not contain duplicates", field)
+		}
+		seenUserIds[userId] = struct{}{}
+	}
+	return nil
+}
+
+func validateFeatures(settingsStr string) error {
+	settings := defaultFeatures()
+	if err := common.UnmarshalJsonStr(settingsStr, &settings); err != nil {
+		return fmt.Errorf("ClawX feature config format error: %s", err.Error())
+	}
+	return validateFeaturesValue(settings)
+}
+
+func validateFeaturesValue(settings Features) error {
+	if err := validateFeatureGate(settings.Artifacts.FeatureGate, "artifacts"); err != nil {
+		return err
+	}
+	if err := validateFeatureGate(settings.EcommerceMainImage.FeatureGate, "ecommerceMainImage"); err != nil {
+		return err
+	}
+	if err := validateFeatureGate(settings.HtmlPreview, "htmlPreview"); err != nil {
+		return err
+	}
+	if err := validateFeatureGate(settings.LongTermRules, "longTermRules"); err != nil {
+		return err
+	}
+	alias := strings.TrimSpace(settings.Artifacts.ModelAlias)
+	if !versionedArtifactAliasPattern.MatchString(alias) {
+		return fmt.Errorf("artifacts modelAlias must be a versioned uclaw-artifact-vN alias")
+	}
+	lockedUpstreamModel, locked := managedArtifactUpstreamModel(alias)
+	if !locked {
+		return fmt.Errorf("artifacts modelAlias must reference a supported locked artifact route")
+	}
+	upstreamModel := strings.TrimSpace(settings.Artifacts.UpstreamModel)
+	if upstreamModel != "" {
+		upstreamName := upstreamModel
+		if separator := strings.LastIndex(upstreamName, "/"); separator >= 0 {
+			upstreamName = upstreamName[separator+1:]
+		}
+		if strings.HasPrefix(upstreamName, "uclaw-artifact-v") {
+			return fmt.Errorf("artifacts upstreamModel cannot reference a private artifact alias")
+		}
+		if upstreamModel != lockedUpstreamModel {
+			return fmt.Errorf("artifacts upstreamModel cannot override the locked %s route", alias)
+		}
+	}
+	if !versionIdentifierPattern.MatchString(strings.TrimSpace(settings.Artifacts.PolicyVersion)) {
+		return fmt.Errorf("artifacts policyVersion must use vN format")
+	}
+	if !versionIdentifierPattern.MatchString(strings.TrimSpace(settings.EcommerceMainImage.SkillVersion)) {
+		return fmt.Errorf("ecommerceMainImage skillVersion must use vN format")
+	}
+	if settings.EcommerceMainImage.Enabled {
+		if !settings.Artifacts.Enabled {
+			return fmt.Errorf("ecommerceMainImage requires artifacts to be enabled")
+		}
+	}
+	return nil
 }
 
 func validateHTTPURL(raw string, field string) error {
@@ -212,6 +405,43 @@ func validateModelOptions(settingsStr string) error {
 			return fmt.Errorf("text model %d label cannot exceed 80 characters", index)
 		}
 	}
+	if len(options.Text.FallbackModels) > 100 {
+		return fmt.Errorf("text fallback model count cannot exceed 100")
+	}
+	defaults := ModelOptions{}
+	_ = common.UnmarshalJsonStr(defaultModelOptionsJSON, &defaults)
+	availableModels := normalizeTextModels(options.Text.Models)
+	if len(availableModels) == 0 {
+		availableModels = normalizeTextModels(defaults.Text.Models)
+	}
+	availableTextModels := make(map[string]struct{}, len(availableModels))
+	for _, item := range availableModels {
+		availableTextModels[item.Id] = struct{}{}
+	}
+	primaryModel := fallbackString(options.Text.DefaultModel, defaults.Text.DefaultModel)
+	if _, exists := availableTextModels[primaryModel]; !exists && len(availableModels) > 0 {
+		primaryModel = availableModels[0].Id
+	}
+	seenFallbacks := make(map[string]struct{}, len(options.Text.FallbackModels))
+	for i, fallbackModel := range options.Text.FallbackModels {
+		fallbackModel = strings.TrimSpace(fallbackModel)
+		if fallbackModel == "" {
+			return fmt.Errorf("text fallback model %d is empty", i+1)
+		}
+		if strings.HasPrefix(strings.ToLower(fallbackModel), "uclaw-artifact-v") {
+			return fmt.Errorf("text fallback model %d cannot reference a private artifact alias", i+1)
+		}
+		if fallbackModel == primaryModel {
+			return fmt.Errorf("text fallback model %d cannot equal the primary model", i+1)
+		}
+		if _, duplicate := seenFallbacks[fallbackModel]; duplicate {
+			return fmt.Errorf("text fallback model %d is duplicated", i+1)
+		}
+		if _, available := availableTextModels[fallbackModel]; !available {
+			return fmt.Errorf("text fallback model %d must reference an enabled text model", i+1)
+		}
+		seenFallbacks[fallbackModel] = struct{}{}
+	}
 	for i, item := range options.Image.Models {
 		index := i + 1
 		if strings.TrimSpace(item.Id) == "" {
@@ -249,16 +479,16 @@ func validateModelOptions(settingsStr string) error {
 				return fmt.Errorf("video model %d has invalid duration: %d", index, duration)
 			}
 			if isGrokVideoModel(item.Id) && !isSupportedGrokVideoDuration(duration) {
-				return fmt.Errorf("Grok video model %d only supports 6, 10, or 15 second durations", index)
+				return fmt.Errorf("Grok video model %d only supports 6 or 10 second durations", index)
 			}
 		}
 		if isGrokVideoModel(item.Id) && item.DefaultDurationSeconds != 0 && !isSupportedGrokVideoDuration(item.DefaultDurationSeconds) {
-			return fmt.Errorf("Grok video model %d default duration must be 6, 10, or 15 seconds", index)
+			return fmt.Errorf("Grok video model %d default duration must be 6 or 10 seconds", index)
 		}
 	}
 	defaultVideoModel := fallbackString(options.Video.DefaultModel, "grok-image-video")
 	if isGrokVideoModel(defaultVideoModel) && options.Video.DefaultDurationSeconds != 0 && !isSupportedGrokVideoDuration(options.Video.DefaultDurationSeconds) {
-		return fmt.Errorf("default Grok video duration must be 6, 10, or 15 seconds")
+		return fmt.Errorf("default Grok video duration must be 6 or 10 seconds")
 	}
 	return nil
 }
@@ -317,7 +547,180 @@ func GetModelOptions() ModelOptions {
 	if err := common.UnmarshalJsonStr(GetClientSetting().ModelOptions, &options); err != nil {
 		_ = common.UnmarshalJsonStr(defaultModelOptionsJSON, &options)
 	}
-	return normalizeModelOptions(options)
+	options = normalizeModelOptions(options)
+	features := GetFeatures()
+	if features.Artifacts.Enabled && features.Artifacts.ModelAlias == managedArtifactV1Alias {
+		found := false
+		for index := range options.Text.Models {
+			if strings.TrimSpace(options.Text.Models[index].Id) != managedArtifactV1Alias {
+				continue
+			}
+			enabled := true
+			visible := false
+			options.Text.Models[index].Enabled = &enabled
+			options.Text.Models[index].Visible = &visible
+			found = true
+			break
+		}
+		if !found {
+			enabled := true
+			visible := false
+			options.Text.Models = append(options.Text.Models, ClientModelItem{
+				Id:      managedArtifactV1Alias,
+				Label:   "UClaw Artifact v1",
+				Enabled: &enabled,
+				Visible: &visible,
+			})
+		}
+	}
+	return options
+}
+
+func GetObservability() Observability {
+	settings, err := parseObservability(GetClientSetting().Observability)
+	if err != nil || validateObservabilityValue(settings) != nil {
+		return defaultObservability()
+	}
+	return settings
+}
+
+func defaultFeatures() Features {
+	return Features{
+		Artifacts: ArtifactFeature{
+			FeatureGate: FeatureGate{
+				Enabled:           false,
+				RolloutPercentage: 0,
+			},
+			ModelAlias:    managedArtifactV1Alias,
+			UpstreamModel: managedArtifactV1UpstreamModel,
+			PolicyVersion: "v1",
+		},
+		EcommerceMainImage: EcommerceMainImageFeature{
+			FeatureGate: FeatureGate{
+				Enabled:           false,
+				RolloutPercentage: 0,
+			},
+			SkillVersion: "v1",
+		},
+		HtmlPreview:   FeatureGate{Enabled: false, RolloutPercentage: 0},
+		LongTermRules: FeatureGate{Enabled: false, RolloutPercentage: 0},
+	}
+}
+
+// unavailableFeatures is used only when persisted feature settings cannot be
+// trusted. Unlike a valid disabled default, it removes the private alias and
+// route entirely so a malformed setting cannot leave an artifact runtime
+// accidentally addressable.
+func unavailableFeatures() Features {
+	features := defaultFeatures()
+	features.Artifacts.Enabled = false
+	features.Artifacts.RolloutPercentage = 0
+	features.Artifacts.InternalUserIds = nil
+	features.Artifacts.ModelAlias = ""
+	features.Artifacts.UpstreamModel = ""
+	features.Artifacts.PolicyVersion = ""
+	features.EcommerceMainImage.Enabled = false
+	features.EcommerceMainImage.RolloutPercentage = 0
+	features.EcommerceMainImage.InternalUserIds = nil
+	features.EcommerceMainImage.SkillVersion = ""
+	features.HtmlPreview.Enabled = false
+	features.HtmlPreview.RolloutPercentage = 0
+	features.HtmlPreview.InternalUserIds = nil
+	features.LongTermRules.Enabled = false
+	features.LongTermRules.RolloutPercentage = 0
+	features.LongTermRules.InternalUserIds = nil
+	return features
+}
+
+func GetFeatures() Features {
+	if strings.TrimSpace(GetClientSetting().Features) == "" {
+		return defaultFeatures()
+	}
+	settings := defaultFeatures()
+	if err := common.UnmarshalJsonStr(GetClientSetting().Features, &settings); err != nil {
+		return unavailableFeatures()
+	}
+	settings.Artifacts.ModelAlias = fallbackString(settings.Artifacts.ModelAlias, managedArtifactV1Alias)
+	settings.Artifacts.UpstreamModel = strings.TrimSpace(settings.Artifacts.UpstreamModel)
+	settings.Artifacts.PolicyVersion = fallbackString(settings.Artifacts.PolicyVersion, "v1")
+	settings.EcommerceMainImage.SkillVersion = fallbackString(settings.EcommerceMainImage.SkillVersion, "v1")
+	if validateFeaturesValue(settings) != nil {
+		return unavailableFeatures()
+	}
+	// The public model catalog is intentionally not the source of truth for
+	// artifact routing. A versioned alias always resolves through this registry.
+	settings.Artifacts.UpstreamModel, _ = managedArtifactUpstreamModel(settings.Artifacts.ModelAlias)
+	return settings
+}
+
+func GetPublicFeatures() PublicFeatures {
+	return GetPublicFeaturesForClient(0, "")
+}
+
+func GetPublicFeaturesForClient(userId int, installationId string) PublicFeatures {
+	settings := GetFeatures()
+	return PublicFeatures{
+		Artifacts: PublicArtifactFeature{
+			PublicFeatureGate: publicFeatureGate(settings.Artifacts.FeatureGate, userId, installationId, "artifacts"),
+			ModelAlias:        settings.Artifacts.ModelAlias,
+			PolicyVersion:     settings.Artifacts.PolicyVersion,
+		},
+		EcommerceMainImage: PublicEcommerceMainImageFeature{
+			PublicFeatureGate: publicFeatureGate(settings.EcommerceMainImage.FeatureGate, userId, installationId, "ecommerce-main-image"),
+			SkillVersion:      settings.EcommerceMainImage.SkillVersion,
+		},
+		HtmlPreview:   publicFeatureGate(settings.HtmlPreview, userId, installationId, "html-preview"),
+		LongTermRules: publicFeatureGate(settings.LongTermRules, userId, installationId, "long-term-rules"),
+	}
+}
+
+func publicFeatureGate(gate FeatureGate, userId int, installationId string, salt string) PublicFeatureGate {
+	return PublicFeatureGate{
+		Enabled:           gate.Enabled,
+		RolloutPercentage: gate.RolloutPercentage,
+		Eligible:          managedFeatureEligible(gate, userId, installationId, salt),
+	}
+}
+
+func managedFeatureEligible(gate FeatureGate, userId int, installationId string, salt string) bool {
+	if !gate.Enabled {
+		return false
+	}
+	for _, internalUserId := range gate.InternalUserIds {
+		if internalUserId == userId {
+			return true
+		}
+	}
+	installationId = strings.ToLower(strings.TrimSpace(installationId))
+	if !uclawInstallationIDPattern.MatchString(installationId) || gate.RolloutPercentage <= 0 {
+		return false
+	}
+	sum := sha256.Sum256([]byte(installationId + ":" + salt))
+	bucket := binary.BigEndian.Uint32(sum[:4]) % 10_000
+	return float64(bucket) < gate.RolloutPercentage*100
+}
+
+// ManagedArtifactFeatureEligible is the relay-side enforcement point. The
+// client may hide an out-of-bucket feature early, but the server makes the
+// authoritative decision for the active device token's request.
+func ManagedArtifactFeatureEligible(features Features, userId int, installationId string) bool {
+	return managedFeatureEligible(features.Artifacts.FeatureGate, userId, installationId, "artifacts")
+}
+
+// ManagedArtifactUpstreamModel is deliberately a code-owned registry rather
+// than a normal model-options mapping. Adding v2 requires an explicit server
+// release, so an administrator cannot silently retarget v1 by editing a model.
+func ManagedArtifactUpstreamModel(alias string) (string, bool) {
+	return managedArtifactUpstreamModel(alias)
+}
+
+func managedArtifactUpstreamModel(alias string) (string, bool) {
+	switch strings.TrimSpace(alias) {
+	case managedArtifactV1Alias:
+		return managedArtifactV1UpstreamModel, true
+	default:
+		return "", false
+	}
 }
 
 func normalizeSupportContacts(support Support) []SupportContact {
@@ -377,6 +780,11 @@ func normalizeModelOptions(options ModelOptions) ModelOptions {
 	if !textModelExists(options.Text.Models, options.Text.DefaultModel) && len(options.Text.Models) > 0 {
 		options.Text.DefaultModel = options.Text.Models[0].Id
 	}
+	options.Text.FallbackModels = normalizeTextFallbackModels(
+		options.Text.FallbackModels,
+		options.Text.Models,
+		options.Text.DefaultModel,
+	)
 
 	options.Image.Models = normalizeImageModels(options.Image.Models)
 	if len(options.Image.Models) == 0 {
@@ -442,6 +850,37 @@ func normalizeTextModels(models []ClientModelItem) []ClientModelItem {
 		}
 		seen[item.Id] = true
 		result = append(result, item)
+	}
+	return result
+}
+
+func normalizeTextFallbackModels(
+	values []string,
+	models []ClientModelItem,
+	primaryModel string,
+) []string {
+	available := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		available[model.Id] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || value == primaryModel {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(value), "uclaw-artifact-v") {
+			continue
+		}
+		if _, exists := available[value]; !exists {
+			continue
+		}
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
 	}
 	return result
 }

@@ -25,7 +25,13 @@ import {
 } from './section-registry.tsx'
 
 const DEFAULT_CLAWX_MODEL_OPTIONS =
-  '{"text":{"defaultModel":"smart-latest","defaultThinkingLevel":"medium","models":[{"id":"smart-latest","label":"智能路由","description":"自动选择合适的文本模型。","enabled":true},{"id":"qwen-latest","label":"通义千问","enabled":true},{"id":"deepseek-latest","label":"DeepSeek","enabled":true},{"id":"doubao-latest","label":"豆包","enabled":true},{"id":"kimi-latest","label":"Kimi","enabled":true},{"id":"glm-latest","label":"智谱 GLM","enabled":true}]},"image":{"defaultModel":"gpt-image-2","defaultSize":"1024x1024","defaultQuality":"medium","models":[{"id":"gpt-image-2","label":"Image 2","description":"Image generation and editing.","sizes":["1024x1024","2048x2048","3840x2160"],"qualities":["low","medium","high"],"defaultSize":"1024x1024","defaultQuality":"medium","supportsEditing":true,"enabled":true}]},"video":{"defaultModel":"grok-image-video","defaultSize":"1280x720","defaultDurationSeconds":6,"models":[{"id":"grok-image-video","label":"Grok Video","description":"Supports text-to-video and image-to-video.","modes":["text-to-video","image-to-video"],"sizes":["1280x720","720x1280","1024x1024"],"durations":[6,10],"defaultSize":"1280x720","defaultDurationSeconds":6,"requiresImage":false,"enabled":true},{"id":"grok-video-1.5","label":"Grok Video 1.5","description":"Image-to-video model that requires one reference image.","modes":["image-to-video"],"sizes":["1280x720","720x1280","1024x1024"],"durations":[6,10],"defaultSize":"1280x720","defaultDurationSeconds":6,"requiresImage":true,"enabled":true}]}}'
+  '{"text":{"defaultModel":"smart-latest","fallbackModels":[],"defaultThinkingLevel":"medium","models":[{"id":"smart-latest","label":"智能路由","description":"自动选择合适的文本模型。","enabled":true},{"id":"uclaw-artifact-v1","label":"UClaw Artifact v1","description":"Versioned artifact runtime route.","enabled":true,"visible":false},{"id":"qwen-latest","label":"通义千问","enabled":true},{"id":"deepseek-latest","label":"DeepSeek","enabled":true},{"id":"doubao-latest","label":"豆包","enabled":true},{"id":"kimi-latest","label":"Kimi","enabled":true},{"id":"glm-latest","label":"智谱 GLM","enabled":true}]},"image":{"defaultModel":"gpt-image-2","defaultSize":"1024x1024","defaultQuality":"medium","models":[{"id":"gpt-image-2","label":"Image 2","description":"Image generation and editing.","sizes":["1024x1024","2048x2048","3840x2160"],"qualities":["low","medium","high"],"defaultSize":"1024x1024","defaultQuality":"medium","supportsEditing":true,"enabled":true}]},"video":{"defaultModel":"grok-image-video","defaultSize":"1280x720","defaultDurationSeconds":6,"models":[{"id":"grok-image-video","label":"Grok Video","description":"Supports text-to-video and image-to-video.","modes":["text-to-video","image-to-video"],"sizes":["1280x720","720x1280","1024x1024"],"durations":[6,10],"defaultSize":"1280x720","defaultDurationSeconds":6,"requiresImage":false,"enabled":true},{"id":"grok-video-1.5","label":"Grok Video 1.5","description":"Image-to-video model that requires one reference image.","modes":["image-to-video"],"sizes":["1280x720","720x1280","1024x1024"],"durations":[6,10],"defaultSize":"1280x720","defaultDurationSeconds":6,"requiresImage":true,"enabled":true}]}}'
+
+const DEFAULT_CLAWX_OBSERVABILITY =
+  '{"enabled":false,"tunnelPath":"/api/clawx/observability/envelope","crashSampleRate":1,"handledErrorSampleRate":0.2,"tracesSampleRate":0.05,"artifactSampleRate":0.2,"maxEventsPerHour":30}'
+
+const DEFAULT_CLAWX_FEATURES =
+  '{"artifacts":{"enabled":false,"rolloutPercentage":0,"modelAlias":"uclaw-artifact-v1","upstreamModel":"","policyVersion":"v1"},"ecommerceMainImage":{"enabled":false,"rolloutPercentage":0,"skillVersion":"v1"}}'
 
 const defaultContentSettings: ContentSettings = {
   'console_setting.api_info': '[]',
@@ -41,6 +47,8 @@ const defaultContentSettings: ContentSettings = {
   'clawx_client_setting.support': '{}',
   'clawx_client_setting.support_enabled': false,
   'clawx_client_setting.model_options': DEFAULT_CLAWX_MODEL_OPTIONS,
+  'clawx_client_setting.observability': DEFAULT_CLAWX_OBSERVABILITY,
+  'clawx_client_setting.features': DEFAULT_CLAWX_FEATURES,
   DataExportEnabled: false,
   DataExportDefaultTime: 'hour',
   DataExportInterval: 5,

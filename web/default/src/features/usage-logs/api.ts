@@ -25,6 +25,7 @@ import type {
   GetLogStatsResponse,
   GetMidjourneyLogsParams,
   GetTaskLogsParams,
+  UClawVersionUsageResponse,
   UserInfo,
 } from './types'
 
@@ -82,6 +83,22 @@ export const getLogStats = (params: GetLogStatsParams = {}) =>
 export const getUserLogStats = (
   params: Omit<GetLogStatsParams, 'username' | 'channel'> = {}
 ) => fetchLogStats('/api/log', params, false)
+
+export async function getUClawVersionUsageStats(
+  startTimestamp: number,
+  endTimestamp: number
+): Promise<UClawVersionUsageResponse> {
+  const query = buildQueryParams({
+    start_timestamp: startTimestamp,
+    end_timestamp: endTimestamp,
+  })
+  const res = await api.get(`/api/log/uclaw/version-stats?${query}`)
+  const response = res.data as UClawVersionUsageResponse
+  if (!response.success) {
+    throw new Error(response.message || 'Failed to load UClaw version health')
+  }
+  return response
+}
 
 export async function getUserInfo(
   userId: number

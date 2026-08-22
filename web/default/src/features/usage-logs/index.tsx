@@ -19,12 +19,14 @@ For commercial licensing, please contact support@quantumnous.com
 import { useCallback, useMemo } from 'react'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
+import { useIsAdmin } from '@/hooks/use-admin'
 import { useSidebarConfig } from '@/hooks/use-sidebar-config'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SectionPageLayout } from '@/components/layout'
 import type { NavGroup } from '@/components/layout/types'
 import { CacheStatsDialog } from '@/features/system-settings/general/channel-affinity/cache-stats-dialog'
 import { UserInfoDialog } from './components/dialogs/user-info-dialog'
+import { UClawVersionStats } from './components/uclaw-version-stats'
 import {
   UsageLogsProvider,
   useUsageLogsContext,
@@ -38,6 +40,7 @@ import {
 
 const route = getRouteApi('/_authenticated/usage-logs/$section')
 const TASK_LOG_SECTIONS = ['drawing', 'task'] as const
+const ADMIN_LOG_SECTIONS = ['common', 'uclaw'] as const
 
 const SECTION_META: Record<UsageLogsSectionId, { titleKey: string }> = {
   common: {
@@ -49,16 +52,24 @@ const SECTION_META: Record<UsageLogsSectionId, { titleKey: string }> = {
   task: {
     titleKey: 'Task Logs',
   },
+  uclaw: {
+    titleKey: 'UClaw Version Health',
+  },
 }
 
 function UsageLogsContent() {
   const { t } = useTranslation()
+  const isAdmin = useIsAdmin()
   const navigate = useNavigate()
   const params = route.useParams()
-  const activeCategory: UsageLogsSectionId =
+  const requestedCategory: UsageLogsSectionId =
     params.section && isUsageLogsSectionId(params.section)
       ? params.section
       : USAGE_LOGS_DEFAULT_SECTION
+  const activeCategory: UsageLogsSectionId =
+    requestedCategory === 'uclaw' && !isAdmin
+      ? USAGE_LOGS_DEFAULT_SECTION
+      : requestedCategory
   const {
     selectedUserId,
     userInfoDialogOpen,
@@ -103,10 +114,11 @@ function UsageLogsContent() {
     [navigate]
   )
 
-  const pageMeta =
-    activeCategory === 'common' ? SECTION_META.common : SECTION_META.task
-  const showTaskSwitcher =
-    activeCategory !== 'common' && visibleSections.length > 1
+  const pageMeta = SECTION_META[activeCategory]
+  let switcherSections: UsageLogsSectionId[] = visibleSections
+  if (activeCategory === 'common' || activeCategory === 'uclaw') {
+    switcherSections = isAdmin ? [...ADMIN_LOG_SECTIONS] : []
+  }
 
   return (
     <>
@@ -116,10 +128,10 @@ function UsageLogsContent() {
         </SectionPageLayout.Title>
         <SectionPageLayout.Content>
           <div className='flex h-full min-h-0 flex-col gap-4'>
-            {showTaskSwitcher && (
+            {switcherSections.length > 1 && (
               <Tabs value={activeCategory} onValueChange={handleSectionChange}>
                 <TabsList className='max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto'>
-                  {visibleSections.map((section) => (
+                  {switcherSections.map((section) => (
                     <TabsTrigger key={section} value={section}>
                       {t(SECTION_META[section].titleKey)}
                     </TabsTrigger>
@@ -128,7 +140,11 @@ function UsageLogsContent() {
               </Tabs>
             )}
             <div className='min-h-0 flex-1'>
-              <UsageLogsTable logCategory={activeCategory} />
+              {activeCategory === 'uclaw' ? (
+                <UClawVersionStats />
+              ) : (
+                <UsageLogsTable logCategory={activeCategory} />
+              )}
             </div>
           </div>
         </SectionPageLayout.Content>

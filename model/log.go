@@ -20,117 +20,131 @@ import (
 	"gorm.io/gorm"
 )
 
-const maxLoggedHeaderValueLength = 512
+const (
+	uclawDesktopClientMarker     = "desktop"
+	maxUClawVersionLength        = 64
+	maxUClawCommitLength         = 64
+	maxUClawBuildIDLength        = 128
+	maxUClawRuntimeLabelLength   = 32
+	maxUClawRequestIDLength      = 128
+	maxUClawVersionUsageRows     = 200000
+	uclawVersionCandidatePattern = `%"uclaw_version"%`
+	legacyClawXCandidatePattern  = `%"clawx_version"%`
+)
 
-func truncateLoggedHeaderValue(value string) string {
+func sanitizeUClawDiagnosticValue(value string, maxLength int) string {
 	value = strings.TrimSpace(value)
-	if len(value) <= maxLoggedHeaderValueLength {
-		return value
+	if value == "" || len(value) > maxLength {
+		return ""
 	}
-	return value[:maxLoggedHeaderValueLength] + "...(truncated)"
+	for i := 0; i < len(value); i++ {
+		char := value[i]
+		if char >= 'a' && char <= 'z' ||
+			char >= 'A' && char <= 'Z' ||
+			char >= '0' && char <= '9' ||
+			strings.ContainsRune("._:+-", rune(char)) {
+			continue
+		}
+		return ""
+	}
+	return value
 }
 
-func firstRequestHeader(c *gin.Context, names ...string) string {
+func uclawDiagnosticHeader(c *gin.Context, name string, maxLength int) string {
 	if c == nil || c.Request == nil {
 		return ""
 	}
-	for _, name := range names {
-		if value := truncateLoggedHeaderValue(c.GetHeader(name)); value != "" {
-			return value
-		}
+	return sanitizeUClawDiagnosticValue(c.GetHeader(name), maxLength)
+}
+
+func hasManagedUClawContext(c *gin.Context) bool {
+	if c == nil {
+		return false
 	}
-	return ""
+	// ClawXAuth only sets these values after validating an active managed
+	// device session. Relay requests use the normal token middleware, so they
+	// require an active device-to-token binding as an additional proof.
+	if strings.TrimSpace(c.GetString("clawx_device_id")) != "" &&
+		strings.TrimSpace(c.GetString("clawx_session_id")) != "" {
+		return true
+	}
+	userId := c.GetInt("id")
+	tokenId := c.GetInt("token_id")
+	if userId <= 0 || tokenId <= 0 {
+		return false
+	}
+	linked, err := IsActiveClawXDeviceToken(userId, tokenId)
+	return err == nil && linked
 }
 
 func buildClientDiagnostics(c *gin.Context) map[string]interface{} {
 	if c == nil || c.Request == nil {
 		return nil
 	}
-	clientInfo := map[string]interface{}{}
-	if ip := strings.TrimSpace(c.ClientIP()); ip != "" {
-		clientInfo["ip"] = ip
+	if !strings.EqualFold(strings.TrimSpace(c.GetHeader("X-UClaw-Client")), uclawDesktopClientMarker) {
+		return nil
 	}
-	if method := strings.TrimSpace(c.Request.Method); method != "" {
-		clientInfo["method"] = method
+	if !hasManagedUClawContext(c) {
+		return nil
 	}
-	if host := strings.TrimSpace(c.Request.Host); host != "" {
-		clientInfo["host"] = host
-	}
-	if c.Request.URL != nil {
-		if path := strings.TrimSpace(c.Request.URL.Path); path != "" {
-			clientInfo["path"] = path
-		}
-	}
-	if proto := strings.TrimSpace(c.Request.Proto); proto != "" {
-		clientInfo["proto"] = proto
-	}
-	if c.Request.ContentLength >= 0 {
-		clientInfo["content_length"] = c.Request.ContentLength
-	}
-	if value := firstRequestHeader(c, "User-Agent"); value != "" {
-		clientInfo["user_agent"] = value
-	}
-	if value := firstRequestHeader(c, "Content-Type"); value != "" {
-		clientInfo["content_type"] = value
-	}
-	if value := firstRequestHeader(c, "Accept"); value != "" {
-		clientInfo["accept"] = value
-	}
-	if value := firstRequestHeader(c, "Origin"); value != "" {
-		clientInfo["origin"] = value
-	}
-	if value := firstRequestHeader(c, "Referer"); value != "" {
-		clientInfo["referer"] = value
-	}
-	if value := firstRequestHeader(c, "X-Forwarded-For"); value != "" {
-		clientInfo["x_forwarded_for"] = value
-	}
-	if value := firstRequestHeader(c, "X-Real-IP"); value != "" {
-		clientInfo["x_real_ip"] = value
-	}
-	if value := firstRequestHeader(c, "CF-Connecting-IP"); value != "" {
-		clientInfo["cf_connecting_ip"] = value
-	}
-	if value := firstRequestHeader(c, "CF-IPCountry"); value != "" {
-		clientInfo["cf_ip_country"] = value
-	}
-	if value := firstRequestHeader(c, "CF-Ray"); value != "" {
-		clientInfo["cf_ray"] = value
-	}
-	if value := firstRequestHeader(c, "X-Request-Id", "X-Request-ID"); value != "" {
-		clientInfo["x_request_id"] = value
-	}
-	if value := firstRequestHeader(c, common.RequestIdKey); value != "" {
-		clientInfo["x_oneapi_request_id"] = value
-	}
+
 	clientHeaderFields := []struct {
-		key     string
-		headers []string
+		key       string
+		header    string
+		maxLength int
 	}{
-		{key: "uclaw_client", headers: []string{"X-UClaw-Client"}},
-		{key: "uclaw_version", headers: []string{"X-UClaw-Version"}},
-		{key: "uclaw_platform", headers: []string{"X-UClaw-Platform"}},
-		{key: "uclaw_arch", headers: []string{"X-UClaw-Arch"}},
-		{key: "uclaw_mode", headers: []string{"X-UClaw-Mode"}},
-		{key: "uclaw_provider", headers: []string{"X-UClaw-Provider"}},
-		{key: "uclaw_session_id", headers: []string{"X-UClaw-Session-Id"}},
-		{key: "clawx_client", headers: []string{"X-ClawX-Client"}},
-		{key: "clawx_version", headers: []string{"X-ClawX-Version"}},
-		{key: "clawx_platform", headers: []string{"X-ClawX-Platform"}},
-		{key: "clawx_arch", headers: []string{"X-ClawX-Arch"}},
-		{key: "clawx_mode", headers: []string{"X-ClawX-Mode"}},
-		{key: "clawx_provider", headers: []string{"X-ClawX-Provider"}},
-		{key: "clawx_session_id", headers: []string{"X-ClawX-Session-Id"}},
+		{key: "uclaw_version", header: "X-UClaw-Version", maxLength: maxUClawVersionLength},
+		{key: "uclaw_commit", header: "X-UClaw-Commit", maxLength: maxUClawCommitLength},
+		{key: "uclaw_build_id", header: "X-UClaw-Build-Id", maxLength: maxUClawBuildIDLength},
+		{key: "uclaw_platform", header: "X-UClaw-Platform", maxLength: maxUClawRuntimeLabelLength},
+		{key: "uclaw_arch", header: "X-UClaw-Arch", maxLength: maxUClawRuntimeLabelLength},
+		{key: "uclaw_channel", header: "X-UClaw-Channel", maxLength: maxUClawRuntimeLabelLength},
+		{key: "uclaw_mode", header: "X-UClaw-Mode", maxLength: maxUClawRuntimeLabelLength},
+		{key: "uclaw_request_id", header: "X-Request-Id", maxLength: maxUClawRequestIDLength},
 	}
+	clientInfo := map[string]interface{}{}
 	for _, field := range clientHeaderFields {
-		if value := firstRequestHeader(c, field.headers...); value != "" {
+		if value := uclawDiagnosticHeader(c, field.header, field.maxLength); value != "" {
 			clientInfo[field.key] = value
 		}
 	}
-	if len(clientInfo) == 0 {
+	if _, hasVersion := clientInfo["uclaw_version"]; !hasVersion {
 		return nil
 	}
+	clientInfo["uclaw_client"] = uclawDesktopClientMarker
 	return clientInfo
+}
+
+func recordMinimalUClawVersionSuccess(c *gin.Context, useTimeSeconds int) {
+	diagnostics := buildClientDiagnostics(c)
+	if len(diagnostics) == 0 {
+		return
+	}
+	// The disabled detailed-log path records only anonymous release health.
+	// Request ids are intentionally omitted because they are not needed for
+	// aggregate success-rate or latency calculations.
+	delete(diagnostics, "uclaw_request_id")
+	log := &Log{
+		CreatedAt: common.GetTimestamp(),
+		Type:      LogTypeConsume,
+		UseTime:   useTimeSeconds,
+		Other: common.MapToJsonStr(map[string]interface{}{
+			"client_diagnostics": diagnostics,
+		}),
+	}
+	if err := LOG_DB.Create(log).Error; err != nil {
+		logger.LogError(c, "failed to record minimal UClaw version metric: "+err.Error())
+	}
+}
+
+func replaceClientDiagnostics(c *gin.Context, other map[string]interface{}) {
+	if other == nil {
+		return
+	}
+	delete(other, "client_diagnostics")
+	if clientDiagnostics := buildClientDiagnostics(c); len(clientDiagnostics) > 0 {
+		other["client_diagnostics"] = clientDiagnostics
+	}
 }
 
 func applyExplicitLogTextFilter(tx *gorm.DB, column string, value string) (*gorm.DB, error) {
@@ -205,6 +219,220 @@ func GetLogByTokenId(tokenId int) (logs []*Log, err error) {
 	err = LOG_DB.Model(&Log{}).Where("token_id = ?", tokenId).Order("id desc").Limit(common.MaxRecentItems).Find(&logs).Error
 	formatUserLogs(logs, 0)
 	return logs, err
+}
+
+type UClawVersionUsageFilter struct {
+	StartTimestamp int64
+	EndTimestamp   int64
+}
+
+type UClawVersionUsageStat struct {
+	Version          string  `json:"version"`
+	Commit           string  `json:"commit"`
+	BuildId          string  `json:"build_id"`
+	Platform         string  `json:"platform"`
+	Arch             string  `json:"arch"`
+	Channel          string  `json:"channel"`
+	Mode             string  `json:"mode"`
+	RequestCount     int64   `json:"request_count"`
+	SuccessCount     int64   `json:"success_count"`
+	ErrorCount       int64   `json:"error_count"`
+	SuccessRate      float64 `json:"success_rate"`
+	ErrorRate        float64 `json:"error_rate"`
+	AverageLatencyMs float64 `json:"average_latency_ms"`
+	P95LatencyMs     float64 `json:"p95_latency_ms"`
+}
+
+type UClawVersionUsageSummary struct {
+	StartTimestamp int64                   `json:"start_timestamp"`
+	EndTimestamp   int64                   `json:"end_timestamp"`
+	TotalRequests  int64                   `json:"total_requests"`
+	Truncated      bool                    `json:"truncated"`
+	Items          []UClawVersionUsageStat `json:"items"`
+}
+
+type uclawVersionLogRow struct {
+	Id      int
+	Type    int
+	UseTime int
+	Other   string
+}
+
+type uclawVersionLogOther struct {
+	EndToEndUpstreamResponseMs float64 `json:"end_to_end_upstream_response_ms"`
+	UpstreamResponseMs         float64 `json:"upstream_response_ms"`
+	ClientDiagnostics          struct {
+		UClawClient   string `json:"uclaw_client"`
+		UClawVersion  string `json:"uclaw_version"`
+		UClawCommit   string `json:"uclaw_commit"`
+		UClawBuildId  string `json:"uclaw_build_id"`
+		UClawPlatform string `json:"uclaw_platform"`
+		UClawArch     string `json:"uclaw_arch"`
+		UClawChannel  string `json:"uclaw_channel"`
+		UClawMode     string `json:"uclaw_mode"`
+		ClawXClient   string `json:"clawx_client"`
+		ClawXVersion  string `json:"clawx_version"`
+		ClawXCommit   string `json:"clawx_commit"`
+		ClawXBuildId  string `json:"clawx_build_id"`
+		ClawXPlatform string `json:"clawx_platform"`
+		ClawXArch     string `json:"clawx_arch"`
+		ClawXChannel  string `json:"clawx_channel"`
+		ClawXMode     string `json:"clawx_mode"`
+	} `json:"client_diagnostics"`
+}
+
+type uclawVersionUsageAccumulator struct {
+	stat       UClawVersionUsageStat
+	latencies  []float64
+	latencySum float64
+}
+
+func firstNonEmptyLogValue(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func uclawVersionLatencyMs(row uclawVersionLogRow, other uclawVersionLogOther) float64 {
+	if other.EndToEndUpstreamResponseMs > 0 {
+		return other.EndToEndUpstreamResponseMs
+	}
+	if other.UpstreamResponseMs > 0 {
+		return other.UpstreamResponseMs
+	}
+	if row.UseTime > 0 {
+		return float64(row.UseTime) * 1000
+	}
+	return 0
+}
+
+func percentile95(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sort.Float64s(values)
+	index := int(float64(len(values))*0.95+0.999999999) - 1
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(values) {
+		index = len(values) - 1
+	}
+	return values[index]
+}
+
+func GetUClawVersionUsageSummary(filter UClawVersionUsageFilter) (UClawVersionUsageSummary, error) {
+	summary := UClawVersionUsageSummary{
+		StartTimestamp: filter.StartTimestamp,
+		EndTimestamp:   filter.EndTimestamp,
+		Items:          make([]UClawVersionUsageStat, 0),
+	}
+	query := LOG_DB.Model(&Log{}).
+		Select("id, type, use_time, other").
+		Where("type IN ?", []int{LogTypeConsume, LogTypeError}).
+		Where("(other LIKE ? OR other LIKE ?)", uclawVersionCandidatePattern, legacyClawXCandidatePattern)
+	if filter.StartTimestamp > 0 {
+		query = query.Where("created_at >= ?", filter.StartTimestamp)
+	}
+	if filter.EndTimestamp > 0 {
+		query = query.Where("created_at <= ?", filter.EndTimestamp)
+	}
+	rows, err := query.Order("id desc").Limit(maxUClawVersionUsageRows + 1).Rows()
+	if err != nil {
+		return summary, err
+	}
+	defer rows.Close()
+
+	groups := make(map[string]*uclawVersionUsageAccumulator)
+	scannedRows := 0
+	for rows.Next() {
+		scannedRows++
+		if scannedRows > maxUClawVersionUsageRows {
+			summary.Truncated = true
+			break
+		}
+		var row uclawVersionLogRow
+		if err := LOG_DB.ScanRows(rows, &row); err != nil {
+			return summary, err
+		}
+		var other uclawVersionLogOther
+		if err := common.UnmarshalJsonStr(row.Other, &other); err != nil {
+			continue
+		}
+		diagnostics := other.ClientDiagnostics
+		client := firstNonEmptyLogValue(diagnostics.UClawClient, diagnostics.ClawXClient)
+		if !strings.EqualFold(client, uclawDesktopClientMarker) && !strings.EqualFold(client, "uclaw") {
+			continue
+		}
+		version := sanitizeUClawDiagnosticValue(firstNonEmptyLogValue(diagnostics.UClawVersion, diagnostics.ClawXVersion), maxUClawVersionLength)
+		if version == "" {
+			continue
+		}
+		commit := sanitizeUClawDiagnosticValue(firstNonEmptyLogValue(diagnostics.UClawCommit, diagnostics.ClawXCommit), maxUClawCommitLength)
+		buildId := sanitizeUClawDiagnosticValue(firstNonEmptyLogValue(diagnostics.UClawBuildId, diagnostics.ClawXBuildId), maxUClawBuildIDLength)
+		platform := sanitizeUClawDiagnosticValue(firstNonEmptyLogValue(diagnostics.UClawPlatform, diagnostics.ClawXPlatform), maxUClawRuntimeLabelLength)
+		arch := sanitizeUClawDiagnosticValue(firstNonEmptyLogValue(diagnostics.UClawArch, diagnostics.ClawXArch), maxUClawRuntimeLabelLength)
+		channel := sanitizeUClawDiagnosticValue(firstNonEmptyLogValue(diagnostics.UClawChannel, diagnostics.ClawXChannel), maxUClawRuntimeLabelLength)
+		mode := sanitizeUClawDiagnosticValue(firstNonEmptyLogValue(diagnostics.UClawMode, diagnostics.ClawXMode), maxUClawRuntimeLabelLength)
+		key := strings.Join([]string{version, commit, buildId, platform, arch, channel, mode}, "\x00")
+		group := groups[key]
+		if group == nil {
+			group = &uclawVersionUsageAccumulator{
+				stat: UClawVersionUsageStat{
+					Version:  version,
+					Commit:   commit,
+					BuildId:  buildId,
+					Platform: platform,
+					Arch:     arch,
+					Channel:  channel,
+					Mode:     mode,
+				},
+			}
+			groups[key] = group
+		}
+		group.stat.RequestCount++
+		if row.Type == LogTypeConsume {
+			group.stat.SuccessCount++
+		} else {
+			group.stat.ErrorCount++
+		}
+		if latency := uclawVersionLatencyMs(row, other); latency > 0 {
+			group.latencies = append(group.latencies, latency)
+			group.latencySum += latency
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return summary, err
+	}
+
+	for _, group := range groups {
+		if group.stat.RequestCount > 0 {
+			group.stat.SuccessRate = float64(group.stat.SuccessCount) / float64(group.stat.RequestCount)
+			group.stat.ErrorRate = float64(group.stat.ErrorCount) / float64(group.stat.RequestCount)
+		}
+		if len(group.latencies) > 0 {
+			group.stat.AverageLatencyMs = group.latencySum / float64(len(group.latencies))
+			group.stat.P95LatencyMs = percentile95(group.latencies)
+		}
+		summary.TotalRequests += group.stat.RequestCount
+		summary.Items = append(summary.Items, group.stat)
+	}
+	sort.Slice(summary.Items, func(i, j int) bool {
+		if summary.Items[i].RequestCount != summary.Items[j].RequestCount {
+			return summary.Items[i].RequestCount > summary.Items[j].RequestCount
+		}
+		if summary.Items[i].Version != summary.Items[j].Version {
+			return summary.Items[i].Version > summary.Items[j].Version
+		}
+		left := summary.Items[i]
+		right := summary.Items[j]
+		return strings.Join([]string{left.BuildId, left.Commit, left.Platform, left.Arch, left.Channel, left.Mode}, "\x00") >
+			strings.Join([]string{right.BuildId, right.Commit, right.Platform, right.Arch, right.Channel, right.Mode}, "\x00")
+	})
+	return summary, nil
 }
 
 func RecordLog(userId int, logType int, content string) {
@@ -354,11 +582,7 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	if other == nil {
 		other = make(map[string]interface{})
 	}
-	if _, exists := other["client_diagnostics"]; !exists {
-		if clientDiagnostics := buildClientDiagnostics(c); len(clientDiagnostics) > 0 {
-			other["client_diagnostics"] = clientDiagnostics
-		}
-	}
+	replaceClientDiagnostics(c, other)
 	otherStr := common.MapToJsonStr(other)
 	// 判断是否需要记录 IP
 	needRecordIp := false
@@ -416,12 +640,17 @@ type RecordConsumeLogParams struct {
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
 	if !common.LogConsumeEnabled {
+		recordMinimalUClawVersionSuccess(c, params.UseTimeSeconds)
 		return
 	}
 	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
+	if params.Other == nil {
+		params.Other = make(map[string]interface{})
+	}
+	replaceClientDiagnostics(c, params.Other)
 	otherStr := common.MapToJsonStr(params.Other)
 	// 判断是否需要记录 IP
 	needRecordIp := false

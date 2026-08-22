@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -154,12 +155,7 @@ func clawXModelFamilies() []gin.H {
 
 func clawXRuntimePayload() gin.H {
 	defaultModel := clawXEnv("CLAWX_DEFAULT_MODEL", defaultClawXModel)
-	fallbackModels := make([]string, 0)
-	for _, item := range strings.Split(os.Getenv("CLAWX_FALLBACK_MODELS"), ",") {
-		if modelName := strings.TrimSpace(item); modelName != "" {
-			fallbackModels = append(fallbackModels, modelName)
-		}
-	}
+	fallbackModels := clawXFallbackModels(defaultModel)
 	return gin.H{
 		"providerKey":    clawXEnv("CLAWX_PROVIDER_KEY", defaultClawXProviderKey),
 		"providerName":   clawXEnv("CLAWX_PROVIDER_NAME", defaultClawXProviderName),
@@ -171,6 +167,59 @@ func clawXRuntimePayload() gin.H {
 	}
 }
 
+func clawXFallbackModels(defaultModel string) []string {
+	configured := strings.TrimSpace(os.Getenv("CLAWX_FALLBACK_MODELS"))
+	if configured != "" {
+		return normalizeClawXFallbackModels(strings.Split(configured, ","), defaultModel)
+	}
+
+	familyModels := make(map[string]struct{})
+	for _, family := range clawXModelFamilies() {
+		if id, ok := family["id"].(string); ok {
+			familyModels[id] = struct{}{}
+		}
+	}
+	options := clawx_client_setting.GetModelOptions()
+	if len(options.Text.FallbackModels) > 0 {
+		if fallbackModels := normalizeClawXFallbackModels(options.Text.FallbackModels, defaultModel); len(fallbackModels) > 0 {
+			return fallbackModels
+		}
+	}
+	fallbackModels := make([]string, 0, len(options.Text.Models))
+	for _, item := range options.Text.Models {
+		modelName := strings.TrimSpace(item.Id)
+		if item.Visible != nil && !*item.Visible {
+			continue
+		}
+		if _, exists := familyModels[modelName]; !exists {
+			continue
+		}
+		fallbackModels = append(fallbackModels, modelName)
+	}
+	fallbackModels = normalizeClawXFallbackModels(fallbackModels, defaultModel)
+	if len(fallbackModels) == 0 {
+		logger.LogWarn(context.Background(), "ClawX fallbackModels is empty: no enabled configured text model is safe to select")
+	}
+	return fallbackModels
+}
+
+func normalizeClawXFallbackModels(candidates []string, defaultModel string) []string {
+	seen := make(map[string]struct{}, len(candidates))
+	fallbackModels := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		modelName := strings.TrimSpace(candidate)
+		if modelName == "" || modelName == defaultModel || strings.HasPrefix(strings.ToLower(modelName), "uclaw-artifact-v") {
+			continue
+		}
+		if _, exists := seen[modelName]; exists {
+			continue
+		}
+		seen[modelName] = struct{}{}
+		fallbackModels = append(fallbackModels, modelName)
+	}
+	return fallbackModels
+}
+
 func clawXOfflinePayload() gin.H {
 	return gin.H{
 		"graceSeconds":             int64(common.GetEnvOrDefault("CLAWX_OFFLINE_GRACE_SECONDS", 7*24*60*60)),
@@ -178,7 +227,8 @@ func clawXOfflinePayload() gin.H {
 	}
 }
 
-func clawXBootstrapPayload() gin.H {
+func clawXBootstrapPayload(c *gin.Context) gin.H {
+	bindClawXInstallationFromSession(c)
 	return gin.H{
 		"service": gin.H{
 			"name":        clawXEnv("CLAWX_SERVICE_NAME", "lingzhiwuxian"),
@@ -197,21 +247,25 @@ func clawXBootstrapPayload() gin.H {
 			"remoteMarketplaceEnabled": clawXBoolEnv("CLAWX_SKILL_MARKETPLACE_ENABLED", false),
 			"remoteMarketplaceBaseUrl": nil,
 		},
-		"client": clawXClientConfigPayload(),
+		"client": clawXClientConfigPayload(c),
 	}
 }
 
 func ClawXBootstrap(c *gin.Context) {
-	common.ApiSuccess(c, clawXBootstrapPayload())
+	common.ApiSuccess(c, clawXBootstrapPayload(c))
 }
 
-func clawXClientConfigPayload() gin.H {
+func clawXClientConfigPayload(c *gin.Context) gin.H {
 	support := clawx_client_setting.GetSupport()
 	supportContacts := support.Contacts
 	supportEnabled := clawx_client_setting.GetClientSetting().SupportEnabled && len(supportContacts) > 0
 	firstSupportContact := clawx_client_setting.SupportContact{}
 	if len(supportContacts) > 0 {
 		firstSupportContact = supportContacts[0]
+	}
+	userId := 0
+	if user, _, err := model.ValidateClawXAccessToken(c.GetHeader("Authorization")); err == nil {
+		userId = user.Id
 	}
 	return gin.H{
 		"announcements": gin.H{
@@ -228,12 +282,27 @@ func clawXClientConfigPayload() gin.H {
 			"wechatId":    firstSupportContact.WechatId,
 			"extraNote":   firstSupportContact.ExtraNote,
 		},
-		"modelOptions": clawx_client_setting.GetModelOptions(),
+		"modelOptions":  clawx_client_setting.GetModelOptions(),
+		"observability": clawx_client_setting.GetObservability(),
+		"features":      clawx_client_setting.GetPublicFeaturesForClient(userId, c.GetHeader("X-UClaw-Install-Id")),
 	}
 }
 
 func ClawXClientConfig(c *gin.Context) {
-	common.ApiSuccess(c, clawXClientConfigPayload())
+	bindClawXInstallationFromSession(c)
+	common.ApiSuccess(c, clawXClientConfigPayload(c))
+}
+
+func bindClawXInstallationFromSession(c *gin.Context) {
+	installationId := strings.ToLower(strings.TrimSpace(c.GetHeader("X-UClaw-Install-Id")))
+	if !clawXInstallIDPattern.MatchString(installationId) {
+		return
+	}
+	user, session, err := model.ValidateClawXAccessToken(c.GetHeader("Authorization"))
+	if err != nil || user == nil || session == nil {
+		return
+	}
+	_ = model.BindClawXDeviceInstallation(user.Id, session.DeviceId, installationId)
 }
 
 func clawXRandomSecret(prefix string) (string, error) {

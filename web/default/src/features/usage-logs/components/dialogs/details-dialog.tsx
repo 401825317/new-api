@@ -530,7 +530,9 @@ export function DetailsDialog(props: DetailsDialogProps) {
     (other?.request_path || conversionChain.length > 0)
 
   const useChannel = other?.admin_info?.use_channel
-  const clientDiagnostics = props.isAdmin ? other?.client_diagnostics : undefined
+  const clientDiagnostics = props.isAdmin
+    ? other?.client_diagnostics
+    : undefined
   const clientDiagnosticRows = clientDiagnostics
     ? ([
         clientDiagnostics.ip && {
@@ -613,6 +615,14 @@ export function DetailsDialog(props: DetailsDialogProps) {
           label: 'X-UClaw-Version',
           value: clientDiagnostics.uclaw_version,
         },
+        clientDiagnostics.uclaw_commit && {
+          label: 'X-UClaw-Commit',
+          value: clientDiagnostics.uclaw_commit,
+        },
+        clientDiagnostics.uclaw_build_id && {
+          label: 'X-UClaw-Build-Id',
+          value: clientDiagnostics.uclaw_build_id,
+        },
         clientDiagnostics.uclaw_platform && {
           label: 'X-UClaw-Platform',
           value: clientDiagnostics.uclaw_platform,
@@ -621,9 +631,17 @@ export function DetailsDialog(props: DetailsDialogProps) {
           label: 'X-UClaw-Arch',
           value: clientDiagnostics.uclaw_arch,
         },
+        clientDiagnostics.uclaw_channel && {
+          label: 'X-UClaw-Channel',
+          value: clientDiagnostics.uclaw_channel,
+        },
         clientDiagnostics.uclaw_mode && {
           label: 'X-UClaw-Mode',
           value: clientDiagnostics.uclaw_mode,
+        },
+        clientDiagnostics.uclaw_request_id && {
+          label: 'X-Request-Id',
+          value: clientDiagnostics.uclaw_request_id,
         },
         clientDiagnostics.uclaw_provider && {
           label: 'X-UClaw-Provider',
@@ -641,6 +659,14 @@ export function DetailsDialog(props: DetailsDialogProps) {
           label: 'X-ClawX-Version',
           value: clientDiagnostics.clawx_version,
         },
+        clientDiagnostics.clawx_commit && {
+          label: 'X-ClawX-Commit',
+          value: clientDiagnostics.clawx_commit,
+        },
+        clientDiagnostics.clawx_build_id && {
+          label: 'X-ClawX-Build-Id',
+          value: clientDiagnostics.clawx_build_id,
+        },
         clientDiagnostics.clawx_platform && {
           label: 'X-ClawX-Platform',
           value: clientDiagnostics.clawx_platform,
@@ -648,6 +674,10 @@ export function DetailsDialog(props: DetailsDialogProps) {
         clientDiagnostics.clawx_arch && {
           label: 'X-ClawX-Arch',
           value: clientDiagnostics.clawx_arch,
+        },
+        clientDiagnostics.clawx_channel && {
+          label: 'X-ClawX-Channel',
+          value: clientDiagnostics.clawx_channel,
         },
         clientDiagnostics.clawx_mode && {
           label: 'X-ClawX-Mode',

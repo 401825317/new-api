@@ -140,6 +140,8 @@ export type ContentSettings = {
   'clawx_client_setting.support': string
   'clawx_client_setting.support_enabled': boolean
   'clawx_client_setting.model_options': string
+  'clawx_client_setting.observability': string
+  'clawx_client_setting.features': string
   DataExportEnabled: boolean
   DataExportDefaultTime: string
   DataExportInterval: number

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMemo, useState } from 'react'
-import { Save } from 'lucide-react'
+import { ChevronDown, ChevronUp, Plus, Save, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -42,6 +42,7 @@ type ClawXModelOptionsSectionProps = {
 type ParsedModelOptions = {
   text?: {
     defaultModel?: string
+    fallbackModels?: unknown
     defaultThinkingLevel?: string
     models?: unknown[]
   }
@@ -56,6 +57,16 @@ type ParsedModelOptions = {
 }
 
 type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
+type EnabledTextModel = {
+  id: string
+  label: string
+}
+
+type TextFallbackState = {
+  models: string[]
+  hasError: boolean
+}
 
 const thinkingLevelOptions: Array<{
   value: ThinkingLevel
@@ -100,15 +111,108 @@ function countModels(models: unknown[] | undefined): number {
   return Array.isArray(models) ? models.length : 0
 }
 
+function getEnabledTextModels(
+  models: unknown[] | undefined
+): EnabledTextModel[] {
+  if (!Array.isArray(models)) {
+    return []
+  }
+
+  const seen = new Set<string>()
+  const enabledModels: EnabledTextModel[] = []
+
+  for (const value of models) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      continue
+    }
+    const model = value as Record<string, unknown>
+    const id = typeof model.id === 'string' ? model.id.trim() : ''
+    if (!id || model.enabled === false || seen.has(id)) {
+      continue
+    }
+    const label =
+      typeof model.label === 'string' && model.label.trim()
+        ? model.label.trim()
+        : id
+    seen.add(id)
+    enabledModels.push({ id, label })
+  }
+
+  return enabledModels
+}
+
+function getTextFallbackState(
+  textOptions: ParsedModelOptions['text'],
+  enabledModels: EnabledTextModel[]
+): TextFallbackState {
+  const rawFallbacks = textOptions?.fallbackModels
+  if (rawFallbacks === undefined || rawFallbacks === null) {
+    return { models: [], hasError: false }
+  }
+  if (
+    !Array.isArray(rawFallbacks) ||
+    rawFallbacks.some((model) => typeof model !== 'string')
+  ) {
+    return { models: [], hasError: true }
+  }
+
+  const models = rawFallbacks.map((model) => model.trim())
+  const enabledModelIds = new Set(enabledModels.map((model) => model.id))
+  const primaryModel = textOptions?.defaultModel?.trim() || ''
+  const seen = new Set<string>()
+  let hasError = models.length > 100
+
+  for (const model of models) {
+    if (
+      !model ||
+      model === primaryModel ||
+      !enabledModelIds.has(model) ||
+      seen.has(model)
+    ) {
+      hasError = true
+    }
+    seen.add(model)
+  }
+
+  return { models, hasError }
+}
+
 export function ClawXModelOptionsSection({
   data,
 }: ClawXModelOptionsSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
   const [value, setValue] = useState(() => formatJson(data))
+  const [pendingFallbackModel, setPendingFallbackModel] = useState<
+    string | null
+  >(null)
 
   const parsed = useMemo(() => parseModelOptions(value), [value])
   const hasInvalidJson = parsed === null
+  const enabledTextModels = useMemo(
+    () => getEnabledTextModels(parsed?.text?.models),
+    [parsed]
+  )
+  const fallbackState = useMemo(
+    () => getTextFallbackState(parsed?.text, enabledTextModels),
+    [enabledTextModels, parsed]
+  )
+  const fallbackModelDetails = useMemo(
+    () => new Map(enabledTextModels.map((model) => [model.id, model])),
+    [enabledTextModels]
+  )
+  const fallbackCandidates = useMemo(() => {
+    const primaryModel = parsed?.text?.defaultModel?.trim() || ''
+    const selectedModels = new Set(fallbackState.models)
+    return enabledTextModels.filter(
+      (model) => model.id !== primaryModel && !selectedModels.has(model.id)
+    )
+  }, [enabledTextModels, fallbackState.models, parsed])
+  const pendingFallbackValue = fallbackCandidates.some(
+    (model) => model.id === pendingFallbackModel
+  )
+    ? pendingFallbackModel
+    : null
   const defaultThinkingLevel = normalizeThinkingLevel(
     parsed?.text?.defaultThinkingLevel
   )
@@ -116,7 +220,7 @@ export function ClawXModelOptionsSection({
   const handleFormat = () => {
     const next = parseModelOptions(value)
     if (!next) {
-      toast.error('Invalid JSON')
+      toast.error(t('Invalid JSON'))
       return
     }
     setValue(JSON.stringify(next, null, 2))
@@ -125,7 +229,15 @@ export function ClawXModelOptionsSection({
   const handleSave = () => {
     const next = parseModelOptions(value)
     if (!next) {
-      toast.error('Invalid JSON')
+      toast.error(t('Invalid JSON'))
+      return
+    }
+    if (fallbackState.hasError) {
+      toast.error(
+        t(
+          'Fallback models must be an ordered list of unique enabled text model IDs and cannot include the primary model.'
+        )
+      )
       return
     }
     updateOption.mutate({
@@ -151,6 +263,51 @@ export function ClawXModelOptionsSection({
         2
       )
     )
+  }
+
+  const handleFallbackModelsChange = (fallbackModels: string[]) => {
+    if (!parsed) {
+      return
+    }
+    setValue(
+      JSON.stringify(
+        {
+          ...parsed,
+          text: {
+            ...parsed.text,
+            fallbackModels,
+          },
+        },
+        null,
+        2
+      )
+    )
+  }
+
+  const handleAddFallbackModel = () => {
+    if (!pendingFallbackValue) {
+      return
+    }
+    handleFallbackModelsChange([...fallbackState.models, pendingFallbackValue])
+    setPendingFallbackModel(null)
+  }
+
+  const handleRemoveFallbackModel = (index: number) => {
+    handleFallbackModelsChange(
+      fallbackState.models.filter((_, modelIndex) => modelIndex !== index)
+    )
+  }
+
+  const handleMoveFallbackModel = (index: number, offset: -1 | 1) => {
+    const destination = index + offset
+    if (destination < 0 || destination >= fallbackState.models.length) {
+      return
+    }
+    const nextModels = [...fallbackState.models]
+    const movingModel = nextModels[index]
+    nextModels[index] = nextModels[destination]
+    nextModels[destination] = movingModel
+    handleFallbackModelsChange(nextModels)
   }
 
   return (
@@ -216,6 +373,132 @@ export function ClawXModelOptionsSection({
             </div>
           </div>
 
+          <div className='flex flex-col gap-3 rounded-md border p-3'>
+            <div>
+              <Label>{t('Text fallback models')}</Label>
+              <p className='text-muted-foreground mt-1 text-sm'>
+                {t(
+                  'Tried in order when the primary text model fails. Only enabled text models can be selected.'
+                )}
+              </p>
+            </div>
+
+            <div className='overflow-hidden rounded-md border'>
+              {fallbackState.models.length === 0 ? (
+                <p className='text-muted-foreground px-3 py-4 text-center text-sm'>
+                  {t('No fallback models configured.')}
+                </p>
+              ) : (
+                fallbackState.models.map((modelId, index) => {
+                  const model = fallbackModelDetails.get(modelId)
+                  return (
+                    <div
+                      key={`${modelId}-${index}`}
+                      className='flex min-h-12 items-center gap-2 border-b px-3 py-2 last:border-b-0'
+                    >
+                      <span className='text-muted-foreground w-6 shrink-0 text-sm tabular-nums'>
+                        {index + 1}
+                      </span>
+                      <div className='min-w-0 flex-1'>
+                        <div className='truncate text-sm font-medium'>
+                          {model?.label || modelId || '-'}
+                        </div>
+                        {model && model.label !== modelId && (
+                          <div className='text-muted-foreground truncate font-mono text-xs'>
+                            {modelId}
+                          </div>
+                        )}
+                      </div>
+                      <div className='flex shrink-0 items-center gap-1'>
+                        <Button
+                          type='button'
+                          variant='ghost'
+                          size='icon-sm'
+                          onClick={() => handleMoveFallbackModel(index, -1)}
+                          disabled={index === 0 || updateOption.isPending}
+                          aria-label={t('Move up')}
+                          title={t('Move up')}
+                        >
+                          <ChevronUp />
+                        </Button>
+                        <Button
+                          type='button'
+                          variant='ghost'
+                          size='icon-sm'
+                          onClick={() => handleMoveFallbackModel(index, 1)}
+                          disabled={
+                            index === fallbackState.models.length - 1 ||
+                            updateOption.isPending
+                          }
+                          aria-label={t('Move down')}
+                          title={t('Move down')}
+                        >
+                          <ChevronDown />
+                        </Button>
+                        <Button
+                          type='button'
+                          variant='ghost'
+                          size='icon-sm'
+                          className='text-destructive'
+                          onClick={() => handleRemoveFallbackModel(index)}
+                          disabled={updateOption.isPending}
+                          aria-label={t('Remove')}
+                          title={t('Remove')}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+
+            <div className='grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]'>
+              <Select
+                value={pendingFallbackValue}
+                onValueChange={setPendingFallbackModel}
+                disabled={
+                  hasInvalidJson ||
+                  fallbackCandidates.length === 0 ||
+                  updateOption.isPending
+                }
+              >
+                <SelectTrigger className='w-full'>
+                  <SelectValue placeholder={t('Select')} />
+                </SelectTrigger>
+                <SelectContent alignItemWithTrigger={false}>
+                  <SelectGroup>
+                    {fallbackCandidates.map((model) => (
+                      <SelectItem key={model.id} value={model.id}>
+                        {model.label === model.id
+                          ? model.id
+                          : `${model.label} (${model.id})`}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <Button
+                type='button'
+                variant='outline'
+                onClick={handleAddFallbackModel}
+                disabled={!pendingFallbackValue || updateOption.isPending}
+              >
+                <Plus data-icon='inline-start' />
+                {t('Add')}
+              </Button>
+            </div>
+
+            {fallbackState.hasError && !hasInvalidJson && (
+              <div className='text-destructive text-sm'>
+                {t(
+                  'Fallback models must be an ordered list of unique enabled text model IDs and cannot include the primary model.'
+                )}
+              </div>
+            )}
+          </div>
+
           <div className='flex flex-col gap-2'>
             <Label htmlFor='clawx-model-options-json'>Model options JSON</Label>
             <Textarea
@@ -245,7 +528,11 @@ export function ClawXModelOptionsSection({
             <Button
               type='button'
               onClick={handleSave}
-              disabled={hasInvalidJson || updateOption.isPending}
+              disabled={
+                hasInvalidJson ||
+                fallbackState.hasError ||
+                updateOption.isPending
+              }
             >
               <Save className='mr-2 size-4' />
               Save

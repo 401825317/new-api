@@ -22,18 +22,19 @@ const (
 )
 
 type ClawXDevice struct {
-	Id         int    `json:"id"`
-	UserId     int    `json:"user_id" gorm:"index;uniqueIndex:idx_clawx_device_user_device,priority:1"`
-	DeviceId   string `json:"device_id" gorm:"type:varchar(128);index;uniqueIndex:idx_clawx_device_user_device,priority:2"`
-	Name       string `json:"name" gorm:"type:varchar(255)"`
-	Platform   string `json:"platform" gorm:"type:varchar(64)"`
-	Arch       string `json:"arch" gorm:"type:varchar(64)"`
-	AppVersion string `json:"app_version" gorm:"type:varchar(64)"`
-	Status     string `json:"status" gorm:"type:varchar(32);default:'active';index"`
-	TokenId    int    `json:"token_id" gorm:"index"`
-	CreatedAt  int64  `json:"created_at" gorm:"bigint"`
-	UpdatedAt  int64  `json:"updated_at" gorm:"bigint"`
-	LastSeenAt int64  `json:"last_seen_at" gorm:"bigint"`
+	Id             int    `json:"id"`
+	UserId         int    `json:"user_id" gorm:"index;uniqueIndex:idx_clawx_device_user_device,priority:1"`
+	DeviceId       string `json:"device_id" gorm:"type:varchar(128);index;uniqueIndex:idx_clawx_device_user_device,priority:2"`
+	Name           string `json:"name" gorm:"type:varchar(255)"`
+	Platform       string `json:"platform" gorm:"type:varchar(64)"`
+	Arch           string `json:"arch" gorm:"type:varchar(64)"`
+	AppVersion     string `json:"app_version" gorm:"type:varchar(64)"`
+	InstallationId string `json:"-" gorm:"type:char(64);index"`
+	Status         string `json:"status" gorm:"type:varchar(32);default:'active';index"`
+	TokenId        int    `json:"token_id" gorm:"index"`
+	CreatedAt      int64  `json:"created_at" gorm:"bigint"`
+	UpdatedAt      int64  `json:"updated_at" gorm:"bigint"`
+	LastSeenAt     int64  `json:"last_seen_at" gorm:"bigint"`
 }
 
 type ClawXSession struct {
@@ -126,6 +127,41 @@ func SetClawXDeviceToken(userId int, deviceId string, tokenId int) error {
 			"token_id":   tokenId,
 			"updated_at": common.GetTimestamp(),
 		}).Error
+}
+
+func IsActiveClawXDeviceToken(userId int, tokenId int) (bool, error) {
+	if userId <= 0 || tokenId <= 0 {
+		return false, nil
+	}
+	var count int64
+	err := DB.Model(&ClawXDevice{}).
+		Where("user_id = ? AND token_id = ? AND status = ?", userId, tokenId, ClawXDeviceStatusActive).
+		Count(&count).Error
+	return count > 0, err
+}
+
+func BindClawXDeviceInstallation(userId int, deviceId string, installationId string) error {
+	if userId <= 0 || strings.TrimSpace(deviceId) == "" || strings.TrimSpace(installationId) == "" {
+		return errors.New("invalid device installation binding")
+	}
+	return DB.Model(&ClawXDevice{}).
+		Where("user_id = ? AND device_id = ? AND status = ? AND (installation_id = '' OR installation_id IS NULL)", userId, strings.TrimSpace(deviceId), ClawXDeviceStatusActive).
+		Updates(map[string]interface{}{
+			"installation_id": strings.ToLower(strings.TrimSpace(installationId)),
+			"updated_at":      common.GetTimestamp(),
+		}).Error
+}
+
+func IsActiveClawXDeviceTokenBoundToInstallation(userId int, tokenId int, installationId string) (bool, error) {
+	installationId = strings.ToLower(strings.TrimSpace(installationId))
+	if userId <= 0 || tokenId <= 0 || installationId == "" {
+		return false, nil
+	}
+	var count int64
+	err := DB.Model(&ClawXDevice{}).
+		Where("user_id = ? AND token_id = ? AND status = ? AND installation_id = ?", userId, tokenId, ClawXDeviceStatusActive, installationId).
+		Count(&count).Error
+	return count > 0, err
 }
 
 func RevokeClawXDevice(userId int, deviceId string) error {

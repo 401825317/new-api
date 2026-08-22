@@ -27,10 +27,16 @@ func setupPromptCacheSummaryLogDB(t *testing.T) {
 	common.LogSqlType = common.DatabaseTypeSQLite
 	initCol()
 
-	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
+	dsn := fmt.Sprintf(
+		"file:%s-%d?mode=memory&cache=shared",
+		strings.ReplaceAll(t.Name(), "/", "_"),
+		time.Now().UnixNano(),
+	)
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&Log{}))
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
 	LOG_DB = db
 
 	t.Cleanup(func() {
@@ -40,6 +46,7 @@ func setupPromptCacheSummaryLogDB(t *testing.T) {
 		common.UsingPostgreSQL = originalUsingPostgreSQL
 		common.LogSqlType = originalLogSqlType
 		initCol()
+		require.NoError(t, sqlDB.Close())
 	})
 }
 

@@ -3,14 +3,21 @@ package service
 import (
 	"fmt"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+var channelAffinityUsageCacheTestSequence atomic.Uint64
+
+func uniqueChannelAffinityUsageCacheTestKey(t *testing.T, suffix string) string {
+	t.Helper()
+	return fmt.Sprintf("%s:%s:%d", t.Name(), suffix, channelAffinityUsageCacheTestSequence.Add(1))
+}
 
 func buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP string) *gin.Context {
 	return buildChannelAffinityStatsContextWithModelForTest(ruleName, usingGroup, keyFP, "", 0)
@@ -34,9 +41,9 @@ func buildChannelAffinityStatsContextWithModelForTest(ruleName, usingGroup, keyF
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) {
-	ruleName := fmt.Sprintf("rule_%d", time.Now().UnixNano())
+	ruleName := uniqueChannelAffinityUsageCacheTestKey(t, "rule")
 	usingGroup := "default"
-	keyFP := fmt.Sprintf("fp_%d", time.Now().UnixNano())
+	keyFP := uniqueChannelAffinityUsageCacheTestKey(t, "claude")
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	usage := &dto.Usage{
@@ -61,9 +68,9 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) 
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
-	ruleName := fmt.Sprintf("rule_%d", time.Now().UnixNano())
+	ruleName := uniqueChannelAffinityUsageCacheTestKey(t, "rule")
 	usingGroup := "default"
-	keyFP := fmt.Sprintf("fp_%d", time.Now().UnixNano())
+	keyFP := uniqueChannelAffinityUsageCacheTestKey(t, "mixed")
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	openAIUsage := &dto.Usage{
@@ -91,9 +98,9 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty(t *testing.T) {
-	ruleName := fmt.Sprintf("rule_%d", time.Now().UnixNano())
+	ruleName := uniqueChannelAffinityUsageCacheTestKey(t, "rule")
 	usingGroup := "default"
-	keyFP := fmt.Sprintf("fp_%d", time.Now().UnixNano())
+	keyFP := uniqueChannelAffinityUsageCacheTestKey(t, "unsupported")
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	usage := &dto.Usage{
@@ -113,10 +120,10 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty
 }
 
 func TestGetChannelAffinityUsageCacheSummaryWithFilter_ByModel(t *testing.T) {
-	ruleName := fmt.Sprintf("summary_rule_%d", time.Now().UnixNano())
+	ruleName := uniqueChannelAffinityUsageCacheTestKey(t, "summary-rule")
 	usingGroup := "default"
-	modelName := fmt.Sprintf("gpt-summary-%d", time.Now().UnixNano())
-	otherModelName := fmt.Sprintf("image-summary-%d", time.Now().UnixNano())
+	modelName := uniqueChannelAffinityUsageCacheTestKey(t, "gpt-summary")
+	otherModelName := uniqueChannelAffinityUsageCacheTestKey(t, "image-summary")
 
 	ctx := buildChannelAffinityStatsContextWithModelForTest(ruleName, usingGroup, "fp_model_1", modelName, 7)
 	otherCtx := buildChannelAffinityStatsContextWithModelForTest(ruleName, usingGroup, "fp_model_2", otherModelName, 8)

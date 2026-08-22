@@ -306,6 +306,7 @@ func SetApiRouter(router *gin.Engine) {
 		logRoute.GET("/", middleware.AdminAuth(), controller.GetAllLogs)
 		logRoute.DELETE("/", middleware.AdminAuth(), controller.DeleteHistoryLogs)
 		logRoute.GET("/stat", middleware.AdminAuth(), controller.GetLogsStat)
+		logRoute.GET("/uclaw/version-stats", middleware.AdminAuth(), controller.GetUClawVersionUsageStats)
 		logRoute.GET("/self/stat", middleware.UserAuth(), controller.GetLogsSelfStat)
 		logRoute.GET("/prompt_cache/summary", middleware.AdminAuth(), controller.GetPromptCacheUsageSummary)
 		logRoute.GET("/channel_affinity_usage_cache/summary", middleware.AdminAuth(), controller.GetChannelAffinityUsageCacheSummary)

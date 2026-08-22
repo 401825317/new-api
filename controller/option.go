@@ -374,6 +374,24 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "clawx_client_setting.observability":
+		err = clawx_client_setting.ValidateClientSettings(option.Value.(string), "Observability")
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "clawx_client_setting.features":
+		err = clawx_client_setting.ValidateClientSettings(option.Value.(string), "Features")
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 	}
 	err = model.UpdateOption(option.Key, option.Value.(string))
 	if err != nil {

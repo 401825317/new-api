@@ -17,11 +17,13 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/clawx_client_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type ModelRequest struct {
@@ -36,6 +38,11 @@ func Distribute() func(c *gin.Context) {
 		modelRequest, shouldSelectChannel, err := getModelRequest(c)
 		if err != nil {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
+			return
+		}
+		requestedModel := modelRequest.Model
+		if err := applyManagedArtifactModelAlias(c, modelRequest); err != nil {
+			abortWithOpenAiMessage(c, err.status, err.message)
 			return
 		}
 		if ok {
@@ -159,7 +166,7 @@ func Distribute() func(c *gin.Context) {
 						if usingGroup == "auto" {
 							showGroup = fmt.Sprintf("auto(%s)", selectGroup)
 						}
-						message := i18n.T(c, i18n.MsgDistributorGetChannelFailed, map[string]any{"Group": showGroup, "Model": modelRequest.Model, "Error": err.Error()})
+						message := i18n.T(c, i18n.MsgDistributorGetChannelFailed, map[string]any{"Group": showGroup, "Model": requestedModel, "Error": err.Error()})
 						// 如果错误，但是渠道不为空，说明是数据库一致性问题
 						//if channel != nil {
 						//	common.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
@@ -169,7 +176,7 @@ func Distribute() func(c *gin.Context) {
 						return
 					}
 					if channel == nil {
-						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model}), types.ErrorCodeModelNotFound)
+						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": requestedModel}), types.ErrorCodeModelNotFound)
 						return
 					}
 				}
@@ -313,6 +320,120 @@ func getJSONStringValue(result gjson.Result, field string) (string, error) {
 		return "", fmt.Errorf("field %s must be a string", field)
 	}
 	return result.String(), nil
+}
+
+const managedArtifactModelPrefix = "uclaw-artifact-v"
+
+type managedArtifactModelError struct {
+	status  int
+	message string
+}
+
+func (err *managedArtifactModelError) Error() string {
+	return err.message
+}
+
+func resolveManagedArtifactModel(
+	requestedModel string,
+	features clawx_client_setting.Features,
+	authorized bool,
+	rolloutEligible bool,
+) (string, *managedArtifactModelError) {
+	if !strings.HasPrefix(requestedModel, managedArtifactModelPrefix) {
+		return requestedModel, nil
+	}
+	alias := strings.TrimSpace(features.Artifacts.ModelAlias)
+	if !features.Artifacts.Enabled || !rolloutEligible || requestedModel != alias {
+		return "", &managedArtifactModelError{
+			status:  http.StatusForbidden,
+			message: "the requested model is reserved for the managed UClaw artifact runtime",
+		}
+	}
+	if !authorized {
+		return "", &managedArtifactModelError{
+			status:  http.StatusForbidden,
+			message: "the managed UClaw artifact model requires an active UClaw device token",
+		}
+	}
+	upstreamModel, locked := clawx_client_setting.ManagedArtifactUpstreamModel(alias)
+	if !locked || upstreamModel == "" || strings.HasPrefix(upstreamModel, managedArtifactModelPrefix) {
+		return "", &managedArtifactModelError{
+			status:  http.StatusServiceUnavailable,
+			message: "the managed UClaw artifact model is not configured",
+		}
+	}
+	return upstreamModel, nil
+}
+
+func replaceJSONRequestModel(c *gin.Context, modelName string) error {
+	if !strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "application/json") {
+		return errors.New("the managed UClaw artifact model requires a JSON request")
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return err
+	}
+	body, err := storage.Bytes()
+	if err != nil {
+		return err
+	}
+	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
+		return errors.New("request body must be a JSON object")
+	}
+	nextBody, err := sjson.SetBytes(body, "model", modelName)
+	if err != nil {
+		return err
+	}
+	replacement, err := common.CreateBodyStorage(nextBody)
+	if err != nil {
+		return err
+	}
+	c.Set(common.KeyBodyStorage, replacement)
+	c.Set(common.KeyRequestBody, nextBody)
+	c.Request.Body = io.NopCloser(replacement)
+	c.Request.ContentLength = int64(len(nextBody))
+	_ = storage.Close()
+	return nil
+}
+
+func applyManagedArtifactModelAlias(c *gin.Context, request *ModelRequest) *managedArtifactModelError {
+	if request == nil || !strings.HasPrefix(request.Model, managedArtifactModelPrefix) {
+		return nil
+	}
+	features := clawx_client_setting.GetFeatures()
+	linked, err := model.IsActiveClawXDeviceToken(c.GetInt("id"), c.GetInt("token_id"))
+	if err != nil {
+		return &managedArtifactModelError{
+			status:  http.StatusServiceUnavailable,
+			message: "failed to verify the managed UClaw artifact runtime token",
+		}
+	}
+	installationId := strings.ToLower(strings.TrimSpace(c.GetHeader("X-UClaw-Install-Id")))
+	rolloutEligible, err := model.IsActiveClawXDeviceTokenBoundToInstallation(c.GetInt("id"), c.GetInt("token_id"), installationId)
+	if err != nil {
+		return &managedArtifactModelError{
+			status:  http.StatusServiceUnavailable,
+			message: "failed to verify the managed UClaw artifact device binding",
+		}
+	}
+	if rolloutEligible {
+		rolloutEligible = clawx_client_setting.ManagedArtifactFeatureEligible(features, c.GetInt("id"), installationId)
+	}
+	upstreamModel, resolveErr := resolveManagedArtifactModel(request.Model, features, linked, rolloutEligible)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	alias := request.Model
+	if err := replaceJSONRequestModel(c, upstreamModel); err != nil {
+		return &managedArtifactModelError{
+			status:  http.StatusBadRequest,
+			message: fmt.Sprintf("failed to prepare the managed UClaw artifact request: %s", err.Error()),
+		}
+	}
+	common.SetContextKey(c, constant.ContextKeyUClawArtifactAlias, alias)
+	common.SetContextKey(c, constant.ContextKeyUClawArtifactUpstreamModel, upstreamModel)
+	request.Model = upstreamModel
+	return nil
 }
 
 func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
@@ -507,7 +628,10 @@ func getTaskOriginModelName(c *gin.Context) string {
 }
 
 func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string) *types.NewAPIError {
-	c.Set("original_model", modelName) // for retry
+	// The managed artifact alias is kept in its dedicated context key for
+	// user-visible diagnostics. Channel retry and pricing must use the fixed
+	// upstream model selected above.
+	c.Set("original_model", modelName)
 	if channel == nil {
 		return types.NewError(errors.New("channel is nil"), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}

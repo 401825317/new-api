@@ -8,10 +8,11 @@ import (
 
 func SetClawXRouter(apiRouter *gin.RouterGroup, anonymousRequestBodyLimit gin.HandlerFunc) {
 	clawXRoute := apiRouter.Group("/clawx")
-	clawXRoute.Use(middleware.ClawXAPIRateLimit())
+	clawXRoute.Use(middleware.ClawXTrustedProxy(), middleware.ClawXAPIRateLimit())
 	{
 		clawXRoute.GET("/bootstrap", middleware.DisableCache(), controller.ClawXBootstrap)
 		clawXRoute.GET("/client-config", middleware.DisableCache(), controller.ClawXClientConfig)
+		clawXRoute.POST("/observability/envelope", controller.ClawXObservabilityEnvelope)
 		clawXRoute.GET("/support-qrcodes/:file", controller.ClawXSupportQRCode)
 		clawXRoute.POST("/activation/check", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ClawXActivationCheck)
 		clawXRoute.POST("/verification/send-code", middleware.EmailVerificationRateLimit(), anonymousRequestBodyLimit, controller.ClawXSendVerificationCode)
@@ -53,7 +54,7 @@ func SetClawXRouter(apiRouter *gin.RouterGroup, anonymousRequestBodyLimit gin.Ha
 	}
 
 	compatAuthRoute := apiRouter.Group("/v1/auth")
-	compatAuthRoute.Use(middleware.ClawXAPIRateLimit())
+	compatAuthRoute.Use(middleware.ClawXTrustedProxy(), middleware.ClawXAPIRateLimit())
 	{
 		compatAuthRoute.POST("/refresh", middleware.ClawXRefreshRateLimit(), anonymousRequestBodyLimit, controller.ClawXRefresh)
 		compatAuthRoute.POST("/logout", anonymousRequestBodyLimit, controller.ClawXLogout)

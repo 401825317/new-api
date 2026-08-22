@@ -89,8 +89,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	defer func() {
 		if newAPIError != nil {
-			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
-			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			message := sanitizeManagedArtifactMessage(c, newAPIError.Error())
+			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(message)))
+			newAPIError.SetMessage(common.MessageWithRequestId(message, requestId))
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
@@ -398,7 +399,8 @@ func retrySkipRuleLogName(rule operation_setting.RetrySkipRule) string {
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
-	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
+	publicMessage := sanitizeManagedArtifactMessage(c, err.Error())
+	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(publicMessage)))
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
 	if service.ShouldDisableChannel(err) && channelError.AutoBan {
@@ -428,6 +430,9 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		if upstreamDiagnostics := err.GetUpstreamDiagnostics(); len(upstreamDiagnostics) > 0 {
 			other["upstream_diagnostics"] = upstreamDiagnostics
 		}
+		if upstreamModel := common.GetContextKeyString(c, constant.ContextKeyUClawArtifactUpstreamModel); upstreamModel != "" {
+			other["uclaw_artifact_upstream_model"] = upstreamModel
+		}
 		adminInfo := make(map[string]interface{})
 		adminInfo["use_channel"] = c.GetStringSlice("use_channel")
 		isMultiKey := common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey)
@@ -442,9 +447,19 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			startTime = time.Now()
 		}
 		useTimeSeconds := int(time.Since(startTime).Seconds())
-		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+		publicContent := sanitizeManagedArtifactMessage(c, err.MaskSensitiveErrorWithStatusCode())
+		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, publicContent, tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
 	}
 
+}
+
+func sanitizeManagedArtifactMessage(c *gin.Context, message string) string {
+	upstreamModel := common.GetContextKeyString(c, constant.ContextKeyUClawArtifactUpstreamModel)
+	alias := common.GetContextKeyString(c, constant.ContextKeyUClawArtifactAlias)
+	if upstreamModel == "" || alias == "" {
+		return message
+	}
+	return strings.ReplaceAll(message, upstreamModel, alias)
 }
 
 func RelayMidjourney(c *gin.Context) {
