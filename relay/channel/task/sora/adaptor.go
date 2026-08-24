@@ -24,6 +24,7 @@ import (
 	taskcommon "github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/clawx_client_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
@@ -85,12 +86,12 @@ type apimartAPIError struct {
 }
 
 type apimartRequestPayload struct {
-	Model     string   `json:"model"`
-	Prompt    string   `json:"prompt"`
-	Size      string   `json:"size,omitempty"`
-	Duration  int      `json:"duration,omitempty"`
-	Quality   string   `json:"quality,omitempty"`
-	ImageURLs []string `json:"image_urls,omitempty"`
+	Model      string   `json:"model"`
+	Prompt     string   `json:"prompt"`
+	Size       string   `json:"size,omitempty"`
+	Duration   int      `json:"duration,omitempty"`
+	Resolution string   `json:"resolution,omitempty"`
+	ImageURLs  []string `json:"image_urls,omitempty"`
 }
 
 const (
@@ -112,8 +113,10 @@ type apimartInlineImage struct {
 }
 
 type apimartPreparedRequestBody struct {
-	channelID int
-	body      []byte
+	channelID     int
+	upstreamModel string
+	retryIndex    int
+	body          []byte
 }
 
 type taskError struct {
@@ -169,21 +172,72 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	if taskErr := relaycommon.ValidateMultipartDirect(c, info); taskErr != nil {
 		return taskErr
 	}
-	if !isApimartRelay(info, info.OriginModelName) && !isApimartRelay(info, upstreamModelName(info)) {
-		return nil
+	return nil
+}
+
+func (a *TaskAdaptor) UsesPreparedEffectiveRequest(info *relaycommon.RelayInfo) bool {
+	return info != nil && info.Action != constant.TaskActionRemix && isApimartRelay(info, upstreamModelName(info))
+}
+
+// PrepareEffectiveRequest applies channel overrides after model mapping. The
+// resulting payload is shared by billing and the upstream request, preventing
+// a valid override from changing the wire contract after the quota was priced.
+func (a *TaskAdaptor) PrepareEffectiveRequest(c *gin.Context, info *relaycommon.RelayInfo) (map[string]float64, *dto.TaskError) {
+	if info.Action == constant.TaskActionRemix || !isApimartRelay(info, upstreamModelName(info)) {
+		return a.EstimateBilling(c, info), nil
 	}
+
 	req, err := relaycommon.GetTaskRequest(c)
 	if err != nil {
-		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+		return nil, service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
 	}
-	payload, err := buildApimartPayload(req, upstreamModelName(info))
+	payload, err := buildApimartPayloadCandidate(req, upstreamModelName(info))
 	if err != nil {
-		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+		return nil, service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	data, err := common.Marshal(payload)
+	if err != nil {
+		return nil, service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	data, err = applyApimartParamOverride(data, info)
+	if err != nil {
+		return nil, service.TaskErrorWrapperLocal(errors.Wrap(err, "apply_param_override_failed"), "invalid_request", http.StatusBadRequest)
+	}
+
+	mappedModel := normalizeApimartModelName(upstreamModelName(info))
+	data, err = sjson.SetBytes(data, "model", mappedModel)
+	if err != nil {
+		return nil, service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	var effectivePayload apimartRequestPayload
+	if err := common.Unmarshal(data, &effectivePayload); err != nil {
+		return nil, service.TaskErrorWrapperLocal(fmt.Errorf("invalid APIMart request after parameter override: %w", err), "invalid_request", http.StatusBadRequest)
+	}
+	payload = &effectivePayload
+	payload.Model = mappedModel
+	payload.Size = apimartSize(payload.Size)
+	payload.Resolution = strings.ToLower(strings.TrimSpace(payload.Resolution))
+	payload.Duration, err = resolveApimartDuration(payload.Duration, info.OriginModelName)
+	if err != nil {
+		return nil, service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	if err := validateApimartPayload(payload); err != nil {
+		return nil, service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
 	}
 	if err := validateApimartBase64ImageInputs(payload.ImageURLs, info.ChannelId); err != nil {
-		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+		return nil, service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
 	}
-	return nil
+	data, err = canonicalizeApimartPayloadData(data, payload)
+	if err != nil {
+		return nil, service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	cacheApimartRequestBody(c, info, data)
+
+	qualityRatio := float64(1)
+	if payload.Resolution == "720p" {
+		qualityRatio = 1.5
+	}
+	return map[string]float64{"seconds": float64(payload.Duration), "quality": qualityRatio}, nil
 }
 
 // EstimateBilling 根据用户请求的 seconds 和 size 计算 OtherRatios。
@@ -206,7 +260,7 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 			"seconds": float64(payload.Duration),
 			"quality": 1,
 		}
-		if strings.ToLower(strings.TrimSpace(payload.Quality)) == "720p" {
+		if strings.ToLower(strings.TrimSpace(payload.Resolution)) == "720p" {
 			ratios["quality"] = 1.5
 		}
 		return ratios
@@ -262,27 +316,9 @@ func (a *TaskAdaptor) BuildRequestHeader(c *gin.Context, req *http.Request, info
 
 func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayInfo) (io.Reader, error) {
 	if isApimartRelay(info, upstreamModelName(info)) {
-		if cachedBody, ok := getCachedApimartRequestBody(c, info.ChannelId); ok {
-			return bytes.NewReader(cachedBody), nil
-		}
-
-		req, err := relaycommon.GetTaskRequest(c)
-		if err != nil {
-			return nil, err
-		}
-		payload, err := buildApimartPayload(req, upstreamModelName(info))
-		if err != nil {
-			return nil, err
-		}
-		data, err := common.Marshal(payload)
-		if err != nil {
-			return nil, err
-		}
-		if len(info.ParamOverride) > 0 {
-			data, err = relaycommon.ApplyParamOverrideWithRelayInfo(data, info)
-			if err != nil {
-				return nil, errors.Wrap(err, "apply_param_override_failed")
-			}
+		data, ok := getCachedApimartRequestBody(c, info)
+		if !ok {
+			return nil, fmt.Errorf("APIMart effective request was not prepared before building the request body")
 		}
 		imageURLs, err := apimartPayloadImageURLs(data)
 		if err != nil {
@@ -300,7 +336,7 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 			if err != nil {
 				return nil, errors.Wrap(err, "set_apimart_image_urls_failed")
 			}
-			cacheApimartRequestBody(c, info.ChannelId, data)
+			cacheApimartRequestBody(c, info, data)
 		}
 		return bytes.NewReader(data), nil
 	}
@@ -654,68 +690,281 @@ func parseApimartTaskResult(respBody []byte) (*relaycommon.TaskInfo, bool, error
 }
 
 func buildApimartPayload(req relaycommon.TaskSubmitReq, modelName string) (*apimartRequestPayload, error) {
-	duration, err := apimartDuration(req)
+	payload, err := buildApimartPayloadCandidate(req, modelName)
 	if err != nil {
 		return nil, err
 	}
-	payload := &apimartRequestPayload{
-		Model:     strings.TrimSpace(modelName),
-		Prompt:    req.Prompt,
-		Size:      apimartSize(req.Size),
-		Duration:  duration,
-		Quality:   taskcommon.DefaultString(strings.TrimSpace(req.Quality), "480p"),
-		ImageURLs: apimartImageURLs(req),
-	}
-	if err := taskcommon.UnmarshalMetadata(req.Metadata, payload); err != nil {
+	payload.Size = apimartSize(payload.Size)
+	payload.Resolution = strings.ToLower(strings.TrimSpace(payload.Resolution))
+	payload.Duration, err = resolveApimartDuration(payload.Duration, modelName)
+	if err != nil {
 		return nil, err
 	}
-	payload.Model = strings.TrimSpace(modelName)
-	if payload.Model == "" {
-		payload.Model = "grok-imagine-1.5-video-apimart"
-	}
-	if payload.Size == "" {
-		payload.Size = "16:9"
-	}
-	if payload.Quality == "" {
-		payload.Quality = "480p"
-	}
-	if payload.Duration != 6 && payload.Duration != 10 {
-		return nil, fmt.Errorf("duration must be 6 or 10 seconds")
-	}
-	if len(payload.ImageURLs) > 7 {
-		return nil, fmt.Errorf("image_urls supports at most 7 images")
+	if err := validateApimartPayload(payload); err != nil {
+		return nil, err
 	}
 	return payload, nil
 }
 
-func apimartDuration(req relaycommon.TaskSubmitReq) (int, error) {
+func buildApimartPayloadCandidate(req relaycommon.TaskSubmitReq, modelName string) (*apimartRequestPayload, error) {
+	payload := &apimartRequestPayload{
+		Model:      normalizeApimartModelName(modelName),
+		Prompt:     req.Prompt,
+		Size:       strings.TrimSpace(req.Size),
+		Duration:   apimartDuration(req),
+		Resolution: taskcommon.DefaultString(strings.TrimSpace(req.Quality), "480p"),
+		ImageURLs:  apimartImageURLs(req),
+	}
+	if err := taskcommon.UnmarshalMetadata(apimartMetadata(req.Metadata), payload); err != nil {
+		return nil, err
+	}
+	payload.Model = normalizeApimartModelName(modelName)
+	if payload.Model == "" {
+		payload.Model = "grok-imagine-1.5-video-ext"
+	}
+	if payload.Size == "" {
+		payload.Size = "16:9"
+	}
+	if payload.Resolution == "" {
+		payload.Resolution = "480p"
+	}
+	return payload, nil
+}
+
+func validateApimartPayload(payload *apimartRequestPayload) error {
+	if payload == nil {
+		return fmt.Errorf("APIMart request payload is required")
+	}
+	if strings.TrimSpace(payload.Model) == "" {
+		return fmt.Errorf("model is required")
+	}
+	if strings.TrimSpace(payload.Prompt) == "" {
+		return fmt.Errorf("prompt is required")
+	}
+	if payload.Duration < 6 || payload.Duration > 15 {
+		return fmt.Errorf("duration must be between 6 and 15 seconds")
+	}
+	switch payload.Resolution {
+	case "480p", "720p":
+	default:
+		return fmt.Errorf("resolution must be 480p or 720p")
+	}
+	switch payload.Size {
+	case "16:9", "9:16", "1:1", "3:2", "2:3":
+	default:
+		return fmt.Errorf("size must be one of 16:9, 9:16, 1:1, 3:2, or 2:3")
+	}
+	if len(payload.ImageURLs) > 7 {
+		return fmt.Errorf("image_urls supports at most 7 images")
+	}
+	return nil
+}
+
+func apimartDuration(req relaycommon.TaskSubmitReq) int {
 	if req.Duration != 0 {
-		return req.Duration, nil
+		return req.Duration
 	}
 	if strings.TrimSpace(req.Seconds) == "" {
-		return 6, nil
+		return 0
 	}
 	duration, err := strconv.Atoi(strings.TrimSpace(req.Seconds))
 	if err != nil {
-		return 0, err
+		return 0
 	}
-	return duration, nil
+	return duration
+}
+
+func resolveApimartDuration(duration int, modelName string) (int, error) {
+	resolved, ok := clawx_client_setting.ResolveVideoDuration(modelName, duration)
+	if !ok {
+		return 0, fmt.Errorf("no configured video duration is available for model %q", modelName)
+	}
+	return resolved, nil
 }
 
 func apimartSize(size string) string {
 	switch strings.TrimSpace(size) {
-	case "1280x720", "1792x1024":
+	case "854x480", "1280x720", "1920x1080", "1792x1024":
 		return "16:9"
-	case "720x1280", "1024x1792":
+	case "480x854", "720x1280", "1080x1920", "1024x1792":
 		return "9:16"
 	case "1024x1024":
 		return "1:1"
+	case "16:9", "9:16", "1:1", "3:2", "2:3":
+		return strings.TrimSpace(size)
 	default:
 		if strings.TrimSpace(size) == "" {
 			return "16:9"
 		}
 		return strings.TrimSpace(size)
 	}
+}
+
+func apimartMetadata(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return metadata
+	}
+	result := make(map[string]any, len(metadata)+1)
+	for key, value := range metadata {
+		result[key] = value
+	}
+	if _, hasResolution := result["resolution"]; !hasResolution {
+		if quality, hasQuality := result["quality"]; hasQuality {
+			result["resolution"] = quality
+		}
+	}
+	delete(result, "quality")
+	return result
+}
+
+// applyApimartParamOverride translates existing channel configuration keys to
+// the APIMart wire contract before applying them to the prepared payload.
+func applyApimartParamOverride(data []byte, info *relaycommon.RelayInfo) ([]byte, error) {
+	if info == nil || info.ChannelMeta == nil || len(info.ChannelMeta.ParamOverride) == 0 {
+		return data, nil
+	}
+	translated, err := translateApimartParamOverride(info.ChannelMeta.ParamOverride)
+	if err != nil {
+		return nil, err
+	}
+	infoCopy := *info
+	metaCopy := *info.ChannelMeta
+	metaCopy.ParamOverride = translated
+	infoCopy.ChannelMeta = &metaCopy
+
+	result, err := relaycommon.ApplyParamOverrideWithRelayInfo(data, &infoCopy)
+	if err != nil {
+		return nil, err
+	}
+	info.RuntimeHeadersOverride = infoCopy.RuntimeHeadersOverride
+	info.UseRuntimeHeadersOverride = infoCopy.UseRuntimeHeadersOverride
+	info.ParamOverrideAudit = infoCopy.ParamOverrideAudit
+	return result, nil
+}
+
+func translateApimartParamOverride(source map[string]interface{}) (map[string]interface{}, error) {
+	encoded, err := common.Marshal(source)
+	if err != nil {
+		return nil, err
+	}
+	var translated map[string]interface{}
+	if err := common.Unmarshal(encoded, &translated); err != nil {
+		return nil, err
+	}
+
+	for _, alias := range []struct{ legacy, canonical string }{{"seconds", "duration"}, {"quality", "resolution"}} {
+		value, exists := translated[alias.legacy]
+		if !exists {
+			continue
+		}
+		if _, canonicalExists := translated[alias.canonical]; !canonicalExists {
+			translated[alias.canonical] = normalizeApimartOverrideValue(alias.canonical, value)
+		}
+		delete(translated, alias.legacy)
+	}
+	if value, exists := translated["duration"]; exists {
+		translated["duration"] = normalizeApimartOverrideValue("duration", value)
+	}
+	operations, exists := translated["operations"].([]interface{})
+	if !exists {
+		return translated, nil
+	}
+	for _, rawOperation := range operations {
+		operation, ok := rawOperation.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("invalid APIMart parameter override operation")
+		}
+		mode, _ := operation["mode"].(string)
+		if !isApimartHeaderOverrideOperation(mode) {
+			if path, ok := operation["path"].(string); ok {
+				operation["path"] = canonicalApimartOverridePath(path)
+			}
+		}
+		path, _ := operation["path"].(string)
+		if value, hasValue := operation["value"]; hasValue && !isApimartHeaderOverrideOperation(mode) {
+			operation["value"] = normalizeApimartOverrideValue(path, value)
+		}
+		conditions, _ := operation["conditions"].([]interface{})
+		for _, rawCondition := range conditions {
+			condition, ok := rawCondition.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("invalid APIMart parameter override condition")
+			}
+			conditionPath, _ := condition["path"].(string)
+			conditionPath = canonicalApimartOverridePath(conditionPath)
+			condition["path"] = conditionPath
+			if value, hasValue := condition["value"]; hasValue {
+				condition["value"] = normalizeApimartOverrideValue(conditionPath, value)
+			}
+		}
+	}
+	return translated, nil
+}
+
+func isApimartHeaderOverrideOperation(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "set_header", "delete_header", "copy_header", "move_header", "pass_headers":
+		return true
+	default:
+		return false
+	}
+}
+
+func canonicalApimartOverridePath(path string) string {
+	switch strings.TrimSpace(path) {
+	case "seconds":
+		return "duration"
+	case "quality":
+		return "resolution"
+	default:
+		return path
+	}
+}
+
+func normalizeApimartOverrideValue(path string, value interface{}) interface{} {
+	switch canonicalApimartOverridePath(path) {
+	case "duration":
+		if typed, ok := value.(string); ok {
+			if parsed, err := strconv.Atoi(strings.TrimSpace(typed)); err == nil {
+				return parsed
+			}
+		}
+	case "resolution":
+		if typed, ok := value.(string); ok {
+			return strings.ToLower(strings.TrimSpace(typed))
+		}
+	}
+	return value
+}
+
+func canonicalizeApimartPayloadData(data []byte, payload *apimartRequestPayload) ([]byte, error) {
+	updates := []struct {
+		path  string
+		value interface{}
+	}{
+		{"model", payload.Model}, {"prompt", payload.Prompt}, {"size", payload.Size},
+		{"duration", payload.Duration}, {"resolution", payload.Resolution},
+	}
+	var err error
+	for _, update := range updates {
+		data, err = sjson.SetBytes(data, update.path, update.value)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(payload.ImageURLs) > 0 {
+		data, err = sjson.SetBytes(data, "image_urls", payload.ImageURLs)
+	} else {
+		data, err = sjson.DeleteBytes(data, "image_urls")
+	}
+	if err != nil {
+		return nil, err
+	}
+	data, err = sjson.DeleteBytes(data, "seconds")
+	if err != nil {
+		return nil, err
+	}
+	return sjson.DeleteBytes(data, "quality")
 }
 
 func apimartImageURLs(req relaycommon.TaskSubmitReq) []string {
@@ -967,8 +1216,8 @@ func isApimartHTTPURL(value string) bool {
 	return parsed.Host != "" && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https"))
 }
 
-func getCachedApimartRequestBody(c *gin.Context, channelID int) ([]byte, bool) {
-	if c == nil {
+func getCachedApimartRequestBody(c *gin.Context, info *relaycommon.RelayInfo) ([]byte, bool) {
+	if c == nil || info == nil {
 		return nil, false
 	}
 	value, exists := c.Get(apimartRequestBodyContextKey)
@@ -976,19 +1225,23 @@ func getCachedApimartRequestBody(c *gin.Context, channelID int) ([]byte, bool) {
 		return nil, false
 	}
 	cached, ok := value.(apimartPreparedRequestBody)
-	if !ok || cached.channelID != channelID || len(cached.body) == 0 {
+	if !ok || cached.channelID != info.ChannelId ||
+		cached.upstreamModel != normalizeApimartModelName(upstreamModelName(info)) ||
+		cached.retryIndex != info.RetryIndex || len(cached.body) == 0 {
 		return nil, false
 	}
 	return cached.body, true
 }
 
-func cacheApimartRequestBody(c *gin.Context, channelID int, body []byte) {
-	if c == nil {
+func cacheApimartRequestBody(c *gin.Context, info *relaycommon.RelayInfo, body []byte) {
+	if c == nil || info == nil {
 		return
 	}
 	c.Set(apimartRequestBodyContextKey, apimartPreparedRequestBody{
-		channelID: channelID,
-		body:      append([]byte(nil), body...),
+		channelID:     info.ChannelId,
+		upstreamModel: normalizeApimartModelName(upstreamModelName(info)),
+		retryIndex:    info.RetryIndex,
+		body:          append([]byte(nil), body...),
 	})
 }
 
@@ -1014,6 +1267,15 @@ func isApimartModel(modelName string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func normalizeApimartModelName(modelName string) string {
+	switch strings.TrimSpace(modelName) {
+	case "", "grok-imagine-1.5-video-apimart":
+		return "grok-imagine-1.5-video-ext"
+	default:
+		return strings.TrimSpace(modelName)
 	}
 }
 

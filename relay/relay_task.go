@@ -33,6 +33,13 @@ type TaskSubmitResult struct {
 	//PerCallPrice   types.PriceData
 }
 
+// taskEffectiveRequestPreparer is implemented by task adapters whose channel
+// override changes both the final wire payload and the billing inputs.
+type taskEffectiveRequestPreparer interface {
+	PrepareEffectiveRequest(c *gin.Context, info *relaycommon.RelayInfo) (map[string]float64, *dto.TaskError)
+	UsesPreparedEffectiveRequest(info *relaycommon.RelayInfo) bool
+}
+
 // ResolveOriginTask 处理基于已有任务的提交（remix / continuation）：
 // 查找原始任务、从中提取模型名称、将渠道锁定到原始任务的渠道
 // （通过 info.LockedChannel，重试时复用同一渠道并轮换 key），
@@ -141,8 +148,8 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 }
 
 // RelayTaskSubmit 完成 task 提交的全部流程（每次尝试调用一次）：
-// 刷新渠道元数据 → 确定 platform/adaptor → 验证请求 →
-// 估算计费(EstimateBilling) → 计算价格 → 预扣费（仅首次）→
+// 刷新渠道元数据 → 确定 platform/adaptor → 验证请求 → 模型映射 →
+// 准备最终请求/估算计费 → 计算价格 → 首次预扣/重试价格门禁 →
 // 构建/发送/解析上游请求 → 提交后计费调整(AdjustBillingOnSubmit)。
 // 控制器负责 defer Refund 和成功后 Settle。
 func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitResult, *dto.TaskError) {
@@ -175,6 +182,21 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		return nil, service.TaskErrorWrapperLocal(err, "model_mapping_failed", http.StatusBadRequest)
 	}
 
+	// APIMart 等适配器在此应用渠道参数覆盖并做最终校验，保证计费与
+	// 出站请求读取同一份 attempt-local payload。
+	var estimatedRatios map[string]float64
+	preparedEffectiveRequest := false
+	if preparer, ok := adaptor.(taskEffectiveRequestPreparer); ok {
+		preparedEffectiveRequest = preparer.UsesPreparedEffectiveRequest(info)
+		var taskErr *dto.TaskError
+		estimatedRatios, taskErr = preparer.PrepareEffectiveRequest(c, info)
+		if taskErr != nil {
+			return nil, taskErr
+		}
+	} else {
+		estimatedRatios = adaptor.EstimateBilling(c, info)
+	}
+
 	// 3. 预生成公开 task ID（仅首次）
 	if info.PublicTaskID == "" {
 		info.PublicTaskID = model.GenerateTaskID()
@@ -191,7 +213,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// 5. 计费估算：让适配器根据用户请求提供 OtherRatios（时长、分辨率等）
 	//    必须在 ModelPriceHelperPerCall 之后调用（它会重建 PriceData）。
 	//    ResolveOriginTask 可能已在 remix 路径中预设了 OtherRatios，此处合并。
-	if estimatedRatios := adaptor.EstimateBilling(c, info); len(estimatedRatios) > 0 {
+	if len(estimatedRatios) > 0 {
 		for k, v := range estimatedRatios {
 			info.PriceData.AddOtherRatio(k, v)
 		}
@@ -205,12 +227,16 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		noteTaskQuotaClamp(info, clamp)
 	}
 
-	// 7. 预扣费（仅首次 — 重试时 info.Billing 已存在，跳过）
+	// 7. 预扣费（仅首次）。对于覆盖后涨价的重试，拒绝继续提交，避免
+	// 在该视频热修中引入通用钱包/订阅补预扣链路。
 	if info.Billing == nil && !info.PriceData.FreeModel {
 		info.ForcePreConsume = true
 		if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {
 			return nil, service.TaskErrorFromAPIError(apiErr)
 		}
+	}
+	if taskErr := rejectUncoveredPreparedTaskRetry(info, preparedEffectiveRequest); taskErr != nil {
+		return nil, taskErr
 	}
 
 	// 8. 构建请求体
@@ -260,6 +286,21 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		Platform:       platform,
 		Quota:          finalQuota,
 	}, nil
+}
+
+func rejectUncoveredPreparedTaskRetry(info *relaycommon.RelayInfo, prepared bool) *dto.TaskError {
+	if !prepared || info == nil || info.RetryIndex <= 0 || info.Billing == nil || info.PriceData.FreeModel {
+		return nil
+	}
+	preConsumedQuota := info.Billing.GetPreConsumedQuota()
+	if info.PriceData.Quota <= preConsumedQuota {
+		return nil
+	}
+	return service.TaskErrorWrapperLocal(
+		fmt.Errorf("task retry quota %d exceeds pre-consumed quota %d", info.PriceData.Quota, preConsumedQuota),
+		"pre_consume_failed",
+		http.StatusForbidden,
+	)
 }
 
 // recalcQuotaFromRatios 根据 adjustedRatios 重新计算 quota。

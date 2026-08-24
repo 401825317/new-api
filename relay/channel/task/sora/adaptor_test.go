@@ -143,12 +143,16 @@ func TestBuildApimartPayloadNormalizesOpenAIVideoFields(t *testing.T) {
 	}, "grok-imagine-1.5-video-apimart")
 
 	require.NoError(t, err)
-	require.Equal(t, "grok-imagine-1.5-video-apimart", payload.Model)
+	require.Equal(t, "grok-imagine-1.5-video-ext", payload.Model)
 	require.Equal(t, "animate it", payload.Prompt)
 	require.Equal(t, "16:9", payload.Size)
 	require.Equal(t, 10, payload.Duration)
-	require.Equal(t, "720p", payload.Quality)
+	require.Equal(t, "720p", payload.Resolution)
 	require.Equal(t, []string{"https://example.com/a.png", "https://example.com/b.png"}, payload.ImageURLs)
+	encoded, err := common.Marshal(payload)
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), `"resolution":"720p"`)
+	require.NotContains(t, string(encoded), `"quality"`)
 }
 
 func TestBuildApimartPayloadMetadataCannotOverrideModel(t *testing.T) {
@@ -163,11 +167,11 @@ func TestBuildApimartPayloadMetadataCannotOverrideModel(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, "grok-imagine-1.5-video-ext", payload.Model)
-	require.Equal(t, "720p", payload.Quality)
+	require.Equal(t, "720p", payload.Resolution)
 	require.Equal(t, 10, payload.Duration)
 }
 
-func TestBuildApimartPayloadOnlyAllowsSixOrTenSecondDuration(t *testing.T) {
+func TestBuildApimartPayloadUsesConfiguredMaximumForInvalidDuration(t *testing.T) {
 	testCases := []struct {
 		name    string
 		req     relaycommon.TaskSubmitReq
@@ -175,9 +179,9 @@ func TestBuildApimartPayloadOnlyAllowsSixOrTenSecondDuration(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "defaults to six seconds",
+			name: "defaults to configured maximum",
 			req:  relaycommon.TaskSubmitReq{Prompt: "animate it"},
-			want: 6,
+			want: 10,
 		},
 		{
 			name: "allows explicit six seconds",
@@ -190,19 +194,24 @@ func TestBuildApimartPayloadOnlyAllowsSixOrTenSecondDuration(t *testing.T) {
 			want: 10,
 		},
 		{
-			name:    "rejects unsupported duration",
-			req:     relaycommon.TaskSubmitReq{Prompt: "animate it", Duration: 8},
-			wantErr: "duration must be 6 or 10 seconds",
+			name: "falls back from duration above configured values",
+			req:  relaycommon.TaskSubmitReq{Prompt: "animate it", Duration: 16},
+			want: 10,
 		},
 		{
-			name: "rejects metadata duration override",
+			name: "falls back from documented but unconfigured duration",
+			req:  relaycommon.TaskSubmitReq{Prompt: "animate it", Duration: 15},
+			want: 10,
+		},
+		{
+			name: "falls back from invalid metadata duration",
 			req: relaycommon.TaskSubmitReq{
 				Prompt: "animate it",
 				Metadata: map[string]any{
-					"duration": 12,
+					"duration": 5,
 				},
 			},
-			wantErr: "duration must be 6 or 10 seconds",
+			want: 10,
 		},
 	}
 
@@ -218,6 +227,36 @@ func TestBuildApimartPayloadOnlyAllowsSixOrTenSecondDuration(t *testing.T) {
 			require.Equal(t, testCase.want, payload.Duration)
 		})
 	}
+}
+
+func TestPrepareApimartEffectiveRequestTranslatesLegacyOverrideAndLocksModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	context := apimartTestContext(t, relaycommon.TaskSubmitReq{
+		Model: "grok-image-video", Prompt: "animate it", Size: "854x480", Duration: 15, Quality: "1080p",
+	})
+	info := apimartTestRelayInfo(18)
+	override := map[string]interface{}{"operations": []interface{}{
+		map[string]interface{}{"mode": "set", "path": "quality", "value": "480p", "conditions": []interface{}{
+			map[string]interface{}{"path": "quality", "mode": "full", "value": "480p", "invert": true},
+			map[string]interface{}{"path": "quality", "mode": "full", "value": "720p", "invert": true},
+		}, "logic": "AND"},
+		map[string]interface{}{"mode": "set", "path": "model", "value": "must-not-reach-upstream"},
+	}}
+	info.ParamOverride = override
+	info.ChannelMeta.ParamOverride = override
+
+	ratios := prepareApimartEffectiveRequest(t, &TaskAdaptor{}, context, info)
+	require.Equal(t, map[string]float64{"seconds": 10, "quality": 1}, ratios)
+	body, ok := getCachedApimartRequestBody(context, info)
+	require.True(t, ok)
+
+	var payload map[string]interface{}
+	require.NoError(t, common.Unmarshal(body, &payload))
+	require.Equal(t, "grok-imagine-1.5-video-ext", payload["model"])
+	require.Equal(t, float64(10), payload["duration"])
+	require.Equal(t, "480p", payload["resolution"])
+	require.NotContains(t, payload, "seconds")
+	require.NotContains(t, payload, "quality")
 }
 
 func TestApimartBase64ImageUploadOnlyOccursInBuildRequestBody(t *testing.T) {
@@ -250,7 +289,7 @@ func TestApimartBase64ImageUploadOnlyOccursInBuildRequestBody(t *testing.T) {
 	taskErr := adaptor.ValidateRequestAndSetAction(context, info)
 	require.Nil(t, taskErr)
 	require.Equal(t, 0, uploadCalls)
-	require.Equal(t, map[string]float64{"seconds": 6, "quality": 1}, adaptor.EstimateBilling(context, info))
+	require.Equal(t, map[string]float64{"seconds": 6, "quality": 1}, prepareApimartEffectiveRequest(t, adaptor, context, info))
 	require.Equal(t, 0, uploadCalls)
 
 	firstBody, err := adaptor.BuildRequestBody(context, info)
@@ -282,7 +321,10 @@ func TestApimartBase64ImageRejectsNonAllowlistChannelWithoutUpload(t *testing.T)
 		Seconds:   "6",
 		ImageURLs: []string{"data:image/png;base64," + base64.StdEncoding.EncodeToString(apimartTestPNG())},
 	})
-	taskErr := (&TaskAdaptor{}).ValidateRequestAndSetAction(context, apimartTestRelayInfo(19))
+	adaptor := &TaskAdaptor{}
+	info := apimartTestRelayInfo(19)
+	require.Nil(t, adaptor.ValidateRequestAndSetAction(context, info))
+	_, taskErr := adaptor.PrepareEffectiveRequest(context, info)
 
 	require.NotNil(t, taskErr)
 	require.Contains(t, taskErr.Message, "not enabled for this channel")
@@ -305,7 +347,9 @@ func TestBuildApimartRequestBodyLeavesURLsAndTextOnlyRequestsUntouched(t *testin
 			ImageURLs: []string{"https://client.example.com/reference.png"},
 		})
 
-		body, err := adaptor.BuildRequestBody(context, apimartTestRelayInfo(19))
+		info := apimartTestRelayInfo(19)
+		prepareApimartEffectiveRequest(t, adaptor, context, info)
+		body, err := adaptor.BuildRequestBody(context, info)
 		require.NoError(t, err)
 		payload := decodeApimartRequestPayload(t, body)
 		require.Equal(t, []string{"https://client.example.com/reference.png"}, payload.ImageURLs)
@@ -315,7 +359,9 @@ func TestBuildApimartRequestBodyLeavesURLsAndTextOnlyRequestsUntouched(t *testin
 		context := apimartTestContext(t, relaycommon.TaskSubmitReq{Prompt: "make a sunset video"})
 		context.Set("task_request", relaycommon.TaskSubmitReq{Prompt: "make a sunset video"})
 
-		body, err := adaptor.BuildRequestBody(context, apimartTestRelayInfo(19))
+		info := apimartTestRelayInfo(19)
+		prepareApimartEffectiveRequest(t, adaptor, context, info)
+		body, err := adaptor.BuildRequestBody(context, info)
 		require.NoError(t, err)
 		payload := decodeApimartRequestPayload(t, body)
 		require.Empty(t, payload.ImageURLs)
@@ -343,7 +389,10 @@ func TestApimartBase64ImageValidationAndUploadFailuresAreSafe(t *testing.T) {
 
 		context := apimartTestContext(t, relaycommon.TaskSubmitReq{Prompt: "animate", ImageURLs: []string{dataURL}})
 		context.Set("task_request", relaycommon.TaskSubmitReq{Prompt: "animate", ImageURLs: []string{dataURL}})
-		_, err := (&TaskAdaptor{}).BuildRequestBody(context, apimartTestRelayInfo(18))
+		adaptor := &TaskAdaptor{}
+		info := apimartTestRelayInfo(18)
+		prepareApimartEffectiveRequest(t, adaptor, context, info)
+		_, err := adaptor.BuildRequestBody(context, info)
 
 		require.EqualError(t, err, "APIMart image upload failed with status 502")
 		require.NotContains(t, err.Error(), dataURL)
@@ -388,7 +437,10 @@ func TestBuildApimartRequestBodyUploadsEveryInlineImageAndPreservesURLs(t *testi
 		},
 	})
 
-	body, err := (&TaskAdaptor{}).BuildRequestBody(context, apimartTestRelayInfo(18))
+	adaptor := &TaskAdaptor{}
+	info := apimartTestRelayInfo(18)
+	prepareApimartEffectiveRequest(t, adaptor, context, info)
+	body, err := adaptor.BuildRequestBody(context, info)
 	require.NoError(t, err)
 	payload := decodeApimartRequestPayload(t, body)
 	require.Equal(t, []string{
@@ -422,6 +474,16 @@ func apimartTestRelayInfo(channelID int) *relaycommon.RelayInfo {
 			UpstreamModelName: "grok-imagine-1.5-video-apimart",
 		},
 	}
+}
+
+func prepareApimartEffectiveRequest(t *testing.T, adaptor *TaskAdaptor, context *gin.Context, info *relaycommon.RelayInfo) map[string]float64 {
+	t.Helper()
+	if _, exists := context.Get("task_request"); !exists {
+		require.Nil(t, adaptor.ValidateRequestAndSetAction(context, info))
+	}
+	ratios, taskErr := adaptor.PrepareEffectiveRequest(context, info)
+	require.Nil(t, taskErr)
+	return ratios
 }
 
 func configureApimartInputMedia(t *testing.T, channelIDs string, uploadURL string) {

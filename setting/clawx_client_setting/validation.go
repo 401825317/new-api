@@ -16,9 +16,11 @@ var validAnnouncementLevels = map[string]bool{
 	"urgent":    true,
 }
 
-const defaultGrokVideoDurationSeconds = 6
-
-var supportedGrokVideoDurations = []int{6, 10, 15}
+const (
+	defaultGrokVideoDurationSeconds = 6
+	minGrokVideoDurationSeconds     = 6
+	maxGrokVideoDurationSeconds     = 15
+)
 
 var supportedGrokImageVideoSizes = []string{"854x480", "1280x720", "720x1280", "1920x1080"}
 
@@ -246,16 +248,16 @@ func validateModelOptions(settingsStr string) error {
 				return fmt.Errorf("video model %d has invalid duration: %d", index, duration)
 			}
 			if isGrokVideoModel(item.Id) && !isSupportedGrokVideoDuration(duration) {
-				return fmt.Errorf("Grok video model %d only supports 6, 10, or 15 second durations", index)
+				return fmt.Errorf("Grok video model %d duration must be between %d and %d seconds", index, minGrokVideoDurationSeconds, maxGrokVideoDurationSeconds)
 			}
 		}
 		if isGrokVideoModel(item.Id) && item.DefaultDurationSeconds != 0 && !isSupportedGrokVideoDuration(item.DefaultDurationSeconds) {
-			return fmt.Errorf("Grok video model %d default duration must be 6, 10, or 15 seconds", index)
+			return fmt.Errorf("Grok video model %d default duration must be between %d and %d seconds", index, minGrokVideoDurationSeconds, maxGrokVideoDurationSeconds)
 		}
 	}
 	defaultVideoModel := fallbackString(options.Video.DefaultModel, "grok-image-video")
 	if isGrokVideoModel(defaultVideoModel) && options.Video.DefaultDurationSeconds != 0 && !isSupportedGrokVideoDuration(options.Video.DefaultDurationSeconds) {
-		return fmt.Errorf("default Grok video duration must be 6, 10, or 15 seconds")
+		return fmt.Errorf("default Grok video duration must be between %d and %d seconds", minGrokVideoDurationSeconds, maxGrokVideoDurationSeconds)
 	}
 	return nil
 }
@@ -471,10 +473,7 @@ func normalizeVideoModels(models []ClientVideoModelItem) []ClientVideoModelItem 
 		item.Sizes = normalizeStringList(item.Sizes)
 		if isGrokVideoModel(item.Id) {
 			item.Sizes = supportedGrokVideoSizes(item.Id)
-			item.Durations = cloneSupportedGrokVideoDurations()
-			if !isSupportedGrokVideoDuration(item.DefaultDurationSeconds) {
-				item.DefaultDurationSeconds = defaultGrokVideoDurationSeconds
-			}
+			item.Durations = normalizeGrokVideoDurations(item.Durations)
 		} else {
 			item.Durations = normalizeDurationList(item.Durations)
 		}
@@ -527,6 +526,23 @@ func normalizeDurationList(values []int) []int {
 	return result
 }
 
+// normalizeGrokVideoDurations keeps the administrator-selected catalog within
+// APIMart's documented Grok Imagine duration range. An empty list falls back
+// to that complete documented range for legacy records.
+func normalizeGrokVideoDurations(values []int) []int {
+	values = normalizeDurationList(values)
+	result := make([]int, 0, len(values))
+	for _, value := range values {
+		if isSupportedGrokVideoDuration(value) {
+			result = append(result, value)
+		}
+	}
+	if len(result) == 0 {
+		return cloneSupportedGrokVideoDurations()
+	}
+	return result
+}
+
 func isGrokVideoModel(modelID string) bool {
 	switch strings.ToLower(strings.TrimSpace(modelID)) {
 	case "grok-image-video", "grok-video-1.5", "grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-1.5-video-apimart", "grok-imagine-1.5-video-ext":
@@ -537,16 +553,40 @@ func isGrokVideoModel(modelID string) bool {
 }
 
 func isSupportedGrokVideoDuration(duration int) bool {
-	for _, allowed := range supportedGrokVideoDurations {
-		if duration == allowed {
-			return true
-		}
-	}
-	return false
+	return duration >= minGrokVideoDurationSeconds && duration <= maxGrokVideoDurationSeconds
 }
 
 func cloneSupportedGrokVideoDurations() []int {
-	return append([]int(nil), supportedGrokVideoDurations...)
+	durations := make([]int, 0, maxGrokVideoDurationSeconds-minGrokVideoDurationSeconds+1)
+	for duration := minGrokVideoDurationSeconds; duration <= maxGrokVideoDurationSeconds; duration++ {
+		durations = append(durations, duration)
+	}
+	return durations
+}
+
+// ResolveVideoDuration treats ModelOptions as the single video-duration
+// catalog. A missing or unsupported request falls back to the selected
+// model's largest configured duration, so administrators change behavior by
+// editing configuration instead of relay code.
+func ResolveVideoDuration(modelID string, requested int) (int, bool) {
+	options := GetModelOptions()
+	configuredModel := findVideoModel(options.Video.Models, strings.TrimSpace(modelID))
+	if configuredModel == nil {
+		configuredModel = findVideoModel(options.Video.Models, options.Video.DefaultModel)
+	}
+	if configuredModel == nil || len(configuredModel.Durations) == 0 {
+		return 0, false
+	}
+	if containsInt(configuredModel.Durations, requested) {
+		return requested, true
+	}
+	maximum := configuredModel.Durations[0]
+	for _, duration := range configuredModel.Durations[1:] {
+		if duration > maximum {
+			maximum = duration
+		}
+	}
+	return maximum, true
 }
 
 func supportedGrokVideoSizes(modelID string) []string {
@@ -581,6 +621,24 @@ func imageModelExists(models []ClientImageModelItem, id string) bool {
 func videoModelExists(models []ClientVideoModelItem, id string) bool {
 	for _, item := range models {
 		if item.Id == id {
+			return true
+		}
+	}
+	return false
+}
+
+func findVideoModel(models []ClientVideoModelItem, id string) *ClientVideoModelItem {
+	for index := range models {
+		if models[index].Id == id {
+			return &models[index]
+		}
+	}
+	return nil
+}
+
+func containsInt(values []int, target int) bool {
+	for _, value := range values {
+		if value == target {
 			return true
 		}
 	}
