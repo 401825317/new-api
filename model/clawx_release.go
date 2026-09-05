@@ -114,7 +114,20 @@ func CreateClawXRelease(release *ClawXRelease) error {
 	now := common.GetTimestamp()
 	release.CreatedAt = now
 	release.UpdatedAt = now
-	return DB.Create(release).Error
+	enabled := release.Enabled
+	mandatory := release.Mandatory
+	// GORM substitutes the enabled=true schema default for a bool zero value on
+	// Create. Correct both booleans before the transaction commits so disabled
+	// staging rows are never externally observable as enabled.
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(release).Error; err != nil {
+			return err
+		}
+		return tx.Model(release).Select("enabled", "mandatory").Updates(map[string]interface{}{
+			"enabled":   enabled,
+			"mandatory": mandatory,
+		}).Error
+	})
 }
 
 func UpdateClawXRelease(release *ClawXRelease) error {

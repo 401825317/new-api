@@ -49,6 +49,30 @@ func createClawXReleaseForTest(t *testing.T, release model.ClawXRelease) {
 	require.NoError(t, model.CreateClawXRelease(&release))
 }
 
+func TestClawXReleaseCreatePersistsExplicitDisabled(t *testing.T) {
+	setupClawXControllerTest(t)
+	release := model.ClawXRelease{
+		Channel:     "latest",
+		Platform:    "win",
+		Arch:        "x64",
+		PackageType: model.ClawXReleasePackageTypePortableZip,
+		Version:     "2.0.5",
+		FileName:    "UClaw-2.0.5-win-x64-usb.zip",
+		FileURL:     "https://example.com/UClaw-2.0.5-win-x64-usb.zip",
+		Sha512:      "test-sha512",
+		Size:        123,
+		Enabled:     false,
+		Mandatory:   false,
+	}
+
+	require.NoError(t, model.CreateClawXRelease(&release))
+
+	stored, err := model.GetClawXReleaseById(release.Id)
+	require.NoError(t, err)
+	require.False(t, stored.Enabled)
+	require.False(t, stored.Mandatory)
+}
+
 func performClawXRequest(handler gin.HandlerFunc, body string) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
