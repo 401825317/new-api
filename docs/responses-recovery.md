@@ -39,6 +39,8 @@ Windows full-service tests can collide in upstream affinity-usage test keys gene
 
 The lab Dockerfile requires Linux race tests to pass before producing an image. These tests exposed an existing unsynchronized logging counter and rotation flag in `logger/logger.go`; the patch uses atomic state for both, with a concurrent logging regression test. This is separate from the original SSE failure and is not claimed as the cause of provider overload.
 
+The explicitly disabled-feature `OfficialBaseline` subtest reproduces a separate existing close/send race in the untouched shared scanner. It runs in the ordinary regression gate; only this old-path baseline is excluded from the race gate. All new recovery tests, including both cache modes, concurrent requests and billing, remain under race detection. The patch deliberately does not refactor the shared scanner used by other protocols.
+
 ## Upgrading
 
 Keep official tags and this small patch as separate history. Commit the recovery branch, fetch the intended official release, then run:

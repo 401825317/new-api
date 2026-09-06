@@ -210,13 +210,15 @@ func runResponsesRecoveryFullRelay(t *testing.T, cached bool) {
 	}
 	t.Logf("50 concurrent full-relay requests: 50 failed attempts, 50 successful fallbacks, 50 single settlements; elapsed=%s", time.Since(started))
 	barrier = nil
-	t.Setenv("RESPONSES_STREAM_RECOVERY_ENABLED", "false")
-	group = "recovery-off-" + runID
-	addChannels(group)
-	w = request()
-	require.Equal(t, 200, w.Code)
-	require.Contains(t, w.Body.String(), "overloaded")
-	require.NotContains(t, w.Body.String(), "response.completed")
-	require.Equal(t, int32(54), a.Load())
-	require.Equal(t, int32(53), b.Load(), "official behavior must not switch on this SSE error")
+	t.Run("OfficialBaseline", func(t *testing.T) {
+		t.Setenv("RESPONSES_STREAM_RECOVERY_ENABLED", "false")
+		group = "recovery-off-" + runID
+		addChannels(group)
+		w = request()
+		require.Equal(t, 200, w.Code)
+		require.Contains(t, w.Body.String(), "overloaded")
+		require.NotContains(t, w.Body.String(), "response.completed")
+		require.Equal(t, int32(54), a.Load())
+		require.Equal(t, int32(53), b.Load(), "official behavior must not switch on this SSE error")
+	})
 }
