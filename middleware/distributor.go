@@ -23,8 +23,9 @@ import (
 )
 
 type ModelRequest struct {
-	Model string `json:"model"`
-	Group string `json:"group,omitempty"`
+	Model  string `json:"model"`
+	Group  string `json:"group,omitempty"`
+	Stream bool   `json:"stream,omitempty"`
 }
 
 func Distribute() func(c *gin.Context) {
@@ -36,6 +37,7 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
+		c.Set("responses_recovery_stream_request", modelRequest.Stream)
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {
@@ -111,7 +113,7 @@ func Distribute() func(c *gin.Context) {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							autoGroups := service.GetUserAutoGroup(userGroup)
 							for _, g := range autoGroups {
-								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
+								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) && (!service.ResponsesRecoveryEnabled(c) || !service.ResponsesRouteCooling(g, modelRequest.Model, preferred.Id)) {
 									selectGroup = g
 									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
 									channel = preferred
@@ -159,7 +161,11 @@ func Distribute() func(c *gin.Context) {
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		c.Next()
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
-			service.RecordChannelAffinity(c, channel.Id)
+			channelID := channel.Id
+			if service.ResponsesRecoveryEnabled(c) {
+				channelID = common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+			}
+			service.RecordChannelAffinity(c, channelID)
 		}
 	}
 }

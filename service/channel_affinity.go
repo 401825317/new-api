@@ -610,6 +610,9 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 			common.SysError(fmt.Sprintf("channel affinity cache get failed: key=%s, err=%v", cacheKeyFull, err))
 			return 0, false
 		}
+		if found && ResponsesRecoveryEnabled(c) && ResponsesRouteCooling(usingGroup, modelName, channelID) {
+			return 0, false
+		}
 		if found {
 			return channelID, true
 		}
@@ -674,6 +677,9 @@ func AppendChannelAffinityAdminInfo(c *gin.Context, adminInfo map[string]interfa
 }
 
 func RecordChannelAffinity(c *gin.Context, channelID int) {
+	if c != nil && c.GetBool("responses_recovery_failed") {
+		return
+	}
 	if channelID <= 0 {
 		return
 	}

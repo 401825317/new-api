@@ -121,6 +121,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	if r, ok := request.(*dto.OpenAIResponsesRequest); ok {
+		c.Set("responses_recovery_stateful", r.PreviousResponseID != "")
+	}
 
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	needCountToken := constant.CountToken
@@ -207,6 +210,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		relayInfo.ResponsesRecovery = nil
+		c.Set("responses_recovery_failed", false)
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -219,7 +224,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = relayHandler(c, relayInfo)
 		}
 
+		service.HandleResponsesRecoveryFailure(c, relayInfo, newAPIError)
 		if newAPIError == nil {
+			if outcome := relayInfo.ResponsesRecovery; outcome != nil && outcome.Error != nil {
+				processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), outcome.Error)
+				return
+			}
 			relayInfo.LastError = nil
 			return
 		}
@@ -305,6 +315,9 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 	if channel == nil {
+		if service.ResponsesRecoveryEnabled(c) && info.LastError != nil {
+			return nil, info.LastError
+		}
 		return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 
@@ -316,6 +329,9 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 }
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
+	if service.ResponsesRecoveryEnabled(c) && (c.Request.Context().Err() != nil || c.Writer.Written() || c.GetBool("responses_recovery_stateful")) {
+		return false
+	}
 	if openaiErr == nil {
 		return false
 	}
