@@ -2,10 +2,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/QuantumNous/new-api/common"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +22,9 @@ func main() {
 		w.(http.Flusher).Flush()
 	}
 	mux := http.NewServeMux()
+	bg := newBlueGreenLab(os.Getenv("RECOVERY_LAB_COLOR"), 180*time.Second)
+	mux.HandleFunc("/bluegreen/state", bg.state)
+	mux.HandleFunc("/bluegreen/release", bg.release)
 	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -36,6 +41,13 @@ func main() {
 		mu.Lock()
 		counts[mode]++
 		mu.Unlock()
+		var request struct {
+			Input string `json:"input"`
+		}
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request)
+		if mode == "ok" && bg.stream(w, r, request.Input) {
+			return
+		}
 		failure := map[string]any{"code": "server_error", "message": "RECOVERY_LAB simulated upstream overload", "type": "service_unavailable_error"}
 		if mode == "http503" {
 			w.Header().Set("Content-Type", "application/json")

@@ -3,7 +3,7 @@ WORKDIR /build
 COPY web/package.json web/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY web ./
-RUN DISABLE_ESLINT_PLUGIN=true VITE_REACT_APP_VERSION=v0.13.2-recovery-lab.2 bun run build
+RUN DISABLE_ESLINT_PLUGIN=true VITE_REACT_APP_VERSION=v0.13.2-recovery-lab.3 bun run build
 
 FROM registry-1.docker.io/library/golang:1.26.1-alpine@sha256:2389ebfa5b7f43eeafbd6be0c3700cc46690ef842ad962f6c5bd6be49ed82039 AS backend
 WORKDIR /build
@@ -11,10 +11,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN apk add --no-cache gcc musl-dev
-RUN go test ./middleware ./controller ./relay/channel/openai ./service ./logger -run TestResponsesRecovery -count=1 -timeout 120s
-RUN CGO_ENABLED=1 go test -race ./middleware ./controller ./relay/channel/openai ./service ./logger -run TestResponsesRecovery -skip 'TestResponsesRecoveryFullRelay/[^/]+/OfficialBaseline' -count=1 -timeout 120s
+RUN go test ./cmd/recovery-lab-mock ./middleware ./controller ./relay/channel/openai ./service ./logger -run 'TestResponsesRecovery|TestBlueGreen' -count=1 -timeout 120s
+RUN CGO_ENABLED=1 go test -race ./cmd/recovery-lab-mock ./middleware ./controller ./relay/channel/openai ./service ./logger -run 'TestResponsesRecovery|TestBlueGreen' -skip 'TestResponsesRecoveryFullRelay/[^/]+/OfficialBaseline' -count=1 -timeout 120s
 COPY --from=frontend /build/dist ./web/dist
-RUN CGO_ENABLED=0 go build -ldflags "-s -w -X github.com/QuantumNous/new-api/common.Version=v0.13.2-recovery-lab.2" -o /new-api .
+RUN CGO_ENABLED=0 go build -ldflags "-s -w -X github.com/QuantumNous/new-api/common.Version=v0.13.2-recovery-lab.3" -o /new-api .
 RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /recovery-lab-mock ./cmd/recovery-lab-mock
 
 FROM registry-1.docker.io/library/debian:bookworm-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a
