@@ -27,6 +27,19 @@ func TestReleaseDrainAdmissionAndChildren(t *testing.T) {
 	}
 }
 
+func TestReleaseDrainFailureQuarantinesNewWork(t *testing.T) {
+	d := &DrainTracker{}
+	done, _ := d.Start()
+	d.Fail()
+	if _, ok := d.Start(); ok {
+		t.Fatal("failed instance continued accumulating new work")
+	}
+	if d.Snapshot().Active != 1 {
+		t.Fatal("in-flight request lost on failure")
+	}
+	done()
+}
+
 func TestReleaseDrainConcurrentAdmission(t *testing.T) {
 	d := &DrainTracker{}
 	var wg sync.WaitGroup

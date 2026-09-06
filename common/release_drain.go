@@ -41,7 +41,7 @@ func (d *DrainTracker) Child() func() {
 
 func (d *DrainTracker) done()  { d.mu.Lock(); d.active--; d.mu.Unlock() }
 func (d *DrainTracker) Begin() { d.mu.Lock(); d.draining = true; d.mu.Unlock() }
-func (d *DrainTracker) Fail()  { d.mu.Lock(); d.failed = true; d.mu.Unlock() }
+func (d *DrainTracker) Fail()  { d.mu.Lock(); d.failed = true; d.draining = true; d.mu.Unlock() }
 func (d *DrainTracker) Snapshot() DrainSnapshot {
 	d.mu.Lock()
 	defer d.mu.Unlock()
