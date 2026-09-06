@@ -29,13 +29,15 @@ The 50-concurrent-request test is deterministic fault injection against local HT
 ## Verification
 
 ```powershell
-go test ./controller ./relay/channel/openai ./service -run TestResponsesRecovery -count=3 -timeout 120s
+go test ./controller ./relay/channel/openai ./service ./logger -run TestResponsesRecovery -count=3 -timeout 120s
 go test ./model ./middleware ./relay/channel -count=1 -timeout 120s
 ```
 
 The full-relay test exercises actual distribution, HTTP adapters, retry controller, error logs, wallet/token settlement and affinity with an isolated SQLite database. It runs both channel-cache modes, 50 simultaneous failed initial attempts followed by 50 successful fallbacks, partial output failure, exhaustion/refund and an opt-out official-behavior baseline. Parser tests cover EOF, malformed events, failure shapes, multiline SSE, cancellation, stateful requests, deadlines, open-stream termination and 100 independent concurrent streams.
 
-Windows full-service tests can collide in upstream affinity-usage test keys generated with `UnixNano`; the untouched official `v0.13.2` also reproduces this failure. Do not confuse that baseline issue with passing recovery tests. Run race detection on a host with CGO and a C compiler before promoting to production.
+Windows full-service tests can collide in upstream affinity-usage test keys generated with `UnixNano`; the untouched official `v0.13.2` also reproduces this failure. Do not confuse that baseline issue with passing recovery tests.
+
+The lab Dockerfile requires Linux race tests to pass before producing an image. These tests exposed an existing unsynchronized logging counter and rotation flag in `logger/logger.go`; the patch uses atomic state for both, with a concurrent logging regression test. This is separate from the original SSE failure and is not claimed as the cause of provider overload.
 
 ## Upgrading
 
@@ -52,3 +54,5 @@ The script creates a separate detached worktree, checks patch applicability and 
 Use a separate service, database/volume, cache and dedicated test-only cf-global group/account/key. Never attach the existing production database, Redis, volumes or group 165. Start with mock channels, then a minimal explicitly scoped live request. Do not use a production API key for a concurrent test.
 
 Rollback is switching off the environment flag and restarting only the lab, or restoring its previous pinned image. No database migration is introduced. Production deployment remains a separate decision.
+
+`Dockerfile.recovery-lab` is explicitly for the v0.13.2 test image: it includes a loopback-only fault injector on port 3101. Never use that image for customer routing. The ordinary official `Dockerfile` is unchanged. For Zeabur local source upload, export only committed source, retain tracked `web/bun.lock` (the CLI otherwise drops it because of `.gitignore`), and select the lab Dockerfile in the exported build directory. Explicit `registry-1.docker.io` references preserve official image digests while avoiding a failing platform mirror.
