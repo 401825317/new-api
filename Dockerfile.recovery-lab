@@ -11,8 +11,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN apk add --no-cache gcc musl-dev
-RUN go test ./cmd/recovery-lab-mock ./middleware ./controller ./relay/channel/openai ./service ./logger -run 'TestResponsesRecovery|TestBlueGreen' -count=1 -timeout 120s
-RUN CGO_ENABLED=1 go test -race ./cmd/recovery-lab-mock ./middleware ./controller ./relay/channel/openai ./service ./logger -run 'TestResponsesRecovery|TestBlueGreen' -skip 'TestResponsesRecoveryFullRelay/[^/]+/OfficialBaseline' -count=1 -timeout 120s
+RUN go test ./cmd/recovery-lab-mock ./common ./model ./middleware ./controller ./relay/channel/openai ./service ./logger -count=1 -timeout 180s
+RUN CGO_ENABLED=1 go test -race ./cmd/recovery-lab-mock ./common ./model ./middleware ./controller ./relay/channel/openai ./service ./logger -run 'TestResponsesRecovery|TestBlueGreen|TestReleaseDrain' -skip 'TestResponsesRecoveryFullRelay/[^/]+/OfficialBaseline' -count=1 -timeout 180s
 COPY --from=frontend /build/dist ./web/dist
 RUN CGO_ENABLED=0 go build -ldflags "-s -w -X github.com/QuantumNous/new-api/common.Version=v0.13.2-recovery-lab.3" -o /new-api .
 RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /recovery-lab-mock ./cmd/recovery-lab-mock

@@ -50,6 +50,12 @@ func addNewRecord(type_ int, id int, value int) {
 }
 
 func batchUpdate() {
+	if common.ReleaseDrainEnabled {
+		if err := FlushReleaseBatch(); err != nil {
+			common.SysError(err.Error())
+		}
+		return
+	}
 	// check if there's any data to update
 	hasData := false
 	for i := 0; i < BatchUpdateTypeCount; i++ {

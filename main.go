@@ -50,6 +50,14 @@ func main() {
 	}
 
 	common.SysLog("New API " + common.Version + " started")
+	if err := model.InstallReleaseWriteGuards(); err != nil {
+		common.FatalLog("release write guard initialization failed")
+		return
+	}
+	if err := service.StartReleaseDrainServer(os.Getenv("RELEASE_DRAIN_TOKEN")); err != nil {
+		common.FatalLog(err.Error())
+		return
+	}
 	if os.Getenv("GIN_MODE") != "debug" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -153,7 +161,9 @@ func main() {
 
 	// Initialize HTTP server
 	server := gin.New()
+	server.Use(middleware.ReleaseDrain())
 	server.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
+		common.ReleaseWriteFailed()
 		common.SysLog(fmt.Sprintf("panic detected: %v", err))
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": gin.H{
@@ -192,7 +202,11 @@ func main() {
 	// Log startup success message
 	common.LogStartupSuccess(startTime, port)
 
-	err = server.Run(":" + port)
+	if common.ReleaseDrainEnabled {
+		err = service.RunReleaseHTTPServer(":"+port, server)
+	} else {
+		err = server.Run(":" + port)
+	}
 	if err != nil {
 		common.FatalLog("failed to start HTTP server: " + err.Error())
 	}

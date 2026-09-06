@@ -500,6 +500,11 @@ func buildUpstreamModelUpdateTaskNotificationContent(
 }
 
 func runChannelUpstreamModelUpdateTaskOnce() {
+	done, ok := common.StartReleaseWork()
+	if !ok {
+		return
+	}
+	defer done()
 	if !channelUpstreamModelUpdateTaskRunning.CompareAndSwap(false, true) {
 		return
 	}

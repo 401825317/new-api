@@ -23,8 +23,23 @@ import (
 func UpdateMidjourneyTaskBulk() {
 	//imageModel := "midjourney"
 	ctx := context.TODO()
+	var finish func()
+	defer func() {
+		if finish != nil {
+			finish()
+		}
+	}()
 	for {
+		if finish != nil {
+			finish()
+			finish = nil
+		}
 		time.Sleep(time.Duration(15) * time.Second)
+		done, ok := common.StartReleaseWork()
+		if !ok {
+			return
+		}
+		finish = done
 
 		tasks := model.GetAllUnFinishTasks()
 		if len(tasks) == 0 {

@@ -20,7 +20,7 @@ try {
     Invoke-GitChecked @('-C', $TargetDirectory, 'apply', $patchFile.FullName)
     Push-Location $TargetDirectory
     try {
-        & go test ./controller ./relay/channel/openai ./service ./logger -run TestResponsesRecovery -count=3 -timeout 120s
+        & go test ./common ./model ./middleware ./controller ./relay/channel/openai ./service ./logger -run 'TestResponsesRecovery|TestReleaseDrain' -count=3 -timeout 120s
         if ($LASTEXITCODE -ne 0) { throw 'Recovery regression tests failed; do not deploy.' }
         & go test ./model ./middleware ./relay/channel -count=1 -timeout 120s
         if ($LASTEXITCODE -ne 0) { throw 'Routing regression tests failed; do not deploy.' }

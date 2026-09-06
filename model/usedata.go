@@ -65,6 +65,12 @@ func LogQuotaData(userId int, username string, modelName string, quota int, crea
 }
 
 func SaveQuotaDataCache() {
+	if common.ReleaseDrainEnabled {
+		if err := FlushReleaseQuotaData(); err != nil {
+			common.SysError(err.Error())
+		}
+		return
+	}
 	CacheQuotaDataLock.Lock()
 	defer CacheQuotaDataLock.Unlock()
 	size := len(CacheQuotaData)

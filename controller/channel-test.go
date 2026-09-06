@@ -30,7 +30,6 @@ import (
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 
-	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/samber/lo"
 	"github.com/tidwall/gjson"
 
@@ -872,6 +871,11 @@ var testAllChannelsLock sync.Mutex
 var testAllChannelsRunning bool = false
 
 func testAllChannels(notify bool) error {
+	done, ok := common.StartReleaseWork()
+	if !ok {
+		return errors.New("instance draining")
+	}
+	defer done()
 
 	testAllChannelsLock.Lock()
 	if testAllChannelsRunning {
@@ -888,7 +892,7 @@ func testAllChannels(notify bool) error {
 	if disableThreshold == 0 {
 		disableThreshold = 10000000 // a impossible value
 	}
-	gopool.Go(func() {
+	common.BillingGo(func() {
 		// 使用 defer 确保无论如何都会重置运行状态，防止死锁
 		defer func() {
 			testAllChannelsLock.Lock()

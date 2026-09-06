@@ -452,6 +452,11 @@ func UpdateChannelBalance(c *gin.Context) {
 }
 
 func updateAllChannelsBalance() error {
+	done, ok := common.StartReleaseWork()
+	if !ok {
+		return fmt.Errorf("instance draining")
+	}
+	defer done()
 	channels, err := model.GetAllChannels(0, 0, true, false)
 	if err != nil {
 		return err
