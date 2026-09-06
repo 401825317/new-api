@@ -18,7 +18,12 @@ import (
 )
 
 const recoveryCreated = "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"status\":\"in_progress\",\"output\":[]}}\n\n"
+const recoveryStructuralMetadata = "data: {\"type\":\"response.in_progress\",\"sequence_number\":1,\"response\":{\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+	"data: {\"type\":\"response.output_item.added\",\"sequence_number\":2,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"status\":\"in_progress\",\"content\":[]}}\n\n" +
+	"data: {\"type\":\"response.reasoning_summary_part.added\",\"sequence_number\":3,\"part\":{\"type\":\"summary_text\",\"text\":\"\"}}\n\n" +
+	"data: {\"type\":\"response.content_part.added\",\"sequence_number\":4,\"part\":{\"type\":\"output_text\",\"text\":\"\"}}\n\n"
 const recoveryDelta = "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"delta\":\"hello\"}\n\n"
+const recoveryReasoningDelta = "data: {\"type\":\"response.reasoning_summary_text.delta\",\"sequence_number\":4,\"delta\":\"thinking\"}\n\n"
 const recoveryOverload = "event: error\ndata: {\"error\":{\"code\":\"server_error\",\"message\":\"Our servers are currently overloaded. Please try again later.\",\"param\":null,\"type\":\"service_unavailable_error\"},\"sequence_number\":4,\"type\":\"error\"}\n\n"
 const recoveryCompleted = "data: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
 
@@ -40,6 +45,7 @@ func TestResponsesRecoveryEvents(t *testing.T) {
 		tokens             int
 	}{
 		{"incident_preoutput", recoveryCreated + recoveryOverload, 503, false, true, 0},
+		{"structural_metadata_then_overload", recoveryCreated + recoveryStructuralMetadata + recoveryOverload, 503, false, true, 0},
 		{"failed_nested", recoveryCreated + "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"overload\"}}}\n\n", 503, false, true, 0},
 		{"empty_eof", "", 502, false, true, 0},
 		{"preamble_eof", recoveryCreated, 502, false, true, 0},
@@ -49,6 +55,7 @@ func TestResponsesRecoveryEvents(t *testing.T) {
 		{"wrong_terminal_status", "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"in_progress\"}}\n\n", 502, false, true, 0},
 		{"success", recoveryCreated + recoveryDelta + recoveryCompleted, 0, true, false, 12},
 		{"output_error", recoveryCreated + recoveryDelta + recoveryOverload, 503, true, true, 0},
+		{"reasoning_output_error", recoveryCreated + recoveryStructuralMetadata + recoveryReasoningDelta + recoveryOverload, 503, true, true, 0},
 		{"output_eof", recoveryDelta, 502, true, true, 0},
 		{"unknown_event_no_replay", "data: {\"type\":\"response.tool_call.started\"}\n\n" + recoveryOverload, 503, true, true, 0},
 		{"invalid_request", "data: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad input\"}}\n\n", 400, false, false, 0},
@@ -82,6 +89,11 @@ func TestResponsesRecoveryEvents(t *testing.T) {
 			}
 			if usage != nil {
 				require.Equal(t, tt.tokens, usage.TotalTokens)
+			}
+			if tt.committed {
+				require.NotEmpty(t, info.ResponsesRecovery.CommitEvent)
+			} else {
+				require.Empty(t, info.ResponsesRecovery.CommitEvent)
 			}
 		})
 	}

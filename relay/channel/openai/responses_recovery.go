@@ -162,6 +162,39 @@ func recoveryUsage(r *dto.OpenAIResponsesResponse, u *dto.Usage) {
 	}
 }
 
+// responsesStructuralPreamble reports whether an event only describes the
+// structure/lifecycle of a response and can therefore remain buffered before
+// the first client-consumable output. Some upstreams emit output-item and
+// content-part placeholders before failing; releasing those placeholders used
+// to mark the stream committed even though no text, reasoning, refusal, image,
+// audio or tool arguments had reached the client.
+func responsesStructuralPreamble(data, eventType string, usage *dto.Usage) bool {
+	if usage != nil && usage.TotalTokens > 0 {
+		return false
+	}
+	root := gjson.Parse(data)
+	switch eventType {
+	case "response.created", "response.queued", "response.in_progress":
+		return root.Get("response.output.#").Int() == 0
+	case dto.ResponsesOutputTypeItemAdded:
+		item := root.Get("item")
+		if item.Get("arguments").String() != "" || item.Get("result").String() != "" {
+			return false
+		}
+		for _, content := range item.Get("content").Array() {
+			if content.Get("text").String() != "" || content.Get("refusal").String() != "" || content.Get("audio").Exists() || content.Get("image_url").String() != "" {
+				return false
+			}
+		}
+		return true
+	case "response.content_part.added", "response.reasoning_summary_part.added":
+		part := root.Get("part")
+		return part.Get("text").String() == "" && part.Get("refusal").String() == "" && !part.Get("audio").Exists() && part.Get("image_url").String() == ""
+	default:
+		return false
+	}
+}
+
 func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	usage := &dto.Usage{}
 	var outputText strings.Builder
@@ -183,7 +216,7 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 			endErr = err
 		}
 		info.StreamStatus.SetEndReason(reason, endErr)
-		logger.LogInfo(c, fmt.Sprintf("responses recovery: committed=%t %s", outcome.Committed, info.StreamStatus.Summary()))
+		logger.LogInfo(c, fmt.Sprintf("responses recovery: committed=%t commit_event=%q %s", outcome.Committed, outcome.CommitEvent, info.StreamStatus.Summary()))
 		if err != nil && !outcome.Committed {
 			return nil, err
 		}
@@ -223,12 +256,18 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	var pending []recoveryFrame
 	pendingBytes := 0
 	sequence := int64(-1)
+	commit := func(eventType string) {
+		if !outcome.Committed {
+			outcome.Committed = true
+			outcome.CommitEvent = eventType
+		}
+	}
 	write := func(f recoveryFrame) error {
 		if c.Request.Context().Err() != nil {
 			return c.Request.Context().Err()
 		}
 		helper.SetEventStreamHeaders(c)
-		outcome.Committed = true
+		commit(f.event)
 		if f.event != "" {
 			if _, err := fmt.Fprintf(c.Writer, "event: %s\n", f.event); err != nil {
 				return err
@@ -244,9 +283,10 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		}
 		return helper.FlushWriter(c)
 	}
-	flush := func() error {
+	flush := func(commitEvent string) error {
 		preC = nil
 		pre.Stop()
+		commit(commitEvent)
 		for _, f := range pending {
 			if err := write(f); err != nil {
 				return err
@@ -325,10 +365,9 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 			if err, penalize := recoveryError(f.data, event.Type); err != nil {
 				// Usage means upstream work occurred: preserve billing, do not replay.
 				if !outcome.Committed && usage.TotalTokens > 0 {
-					if flush() != nil {
+					if flush("upstream_usage") != nil {
 						return clientGone()
 					}
-					outcome.Committed = true
 				}
 				return fail(err, "responses_failed", penalize, &f)
 			}
@@ -336,13 +375,13 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 			if terminal && (event.Response == nil || gjson.Get(f.data, "response.status").String() != "completed") {
 				return fail(types.NewOpenAIError(fmt.Errorf("invalid Responses terminal status"), types.ErrorCodeBadResponse, 502), "responses_invalid_event", true, nil)
 			}
-			isPreamble := (event.Type == "response.created" || event.Type == "response.in_progress") && gjson.Get(f.data, "response.output.#").Int() == 0 && usage.TotalTokens == 0
+			isPreamble := responsesStructuralPreamble(f.data, event.Type, usage)
 			if !outcome.Committed && isPreamble && pendingBytes+len(f.data) < 64<<10 {
 				pending = append(pending, f)
 				pendingBytes += len(f.data)
 				continue
 			}
-			if flush() != nil {
+			if flush(event.Type) != nil {
 				return clientGone()
 			}
 			info.SetFirstResponseTime()

@@ -7,5 +7,9 @@ import "github.com/QuantumNous/new-api/types"
 type ResponsesRecoveryOutcome struct {
 	Error     *types.NewAPIError
 	Committed bool
-	Penalize  bool
+	// CommitEvent records the first SSE event that was actually released to the
+	// client. It is intentionally event metadata only and must never contain the
+	// response payload.
+	CommitEvent string
+	Penalize    bool
 }
