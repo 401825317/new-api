@@ -36,7 +36,9 @@ jobs:
           go test ./common ./model ./middleware ./controller ./relay/channel/openai ./service ./logger \
             -run 'TestReleaseDrain|TestResponsesRecovery' -count=3 -timeout 180s
           go test ./common ./model ./middleware ./controller ./relay/channel/openai ./service ./logger \
-            -run 'TestReleaseDrain|TestResponsesRecovery' -race -count=1 -timeout 180s
+            -run 'TestReleaseDrain|TestResponsesRecovery' \
+            -skip 'TestResponsesRecoveryFullRelay/[^/]+/OfficialBaseline' \
+            -race -count=1 -timeout 180s
 
       - name: Write immutable build version
         run: echo "cf-global-newapi-${GITHUB_SHA::12}" > VERSION
