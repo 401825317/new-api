@@ -48,6 +48,7 @@ func TestResponsesRecoveryEvents(t *testing.T) {
 		{"created_with_output_placeholder_then_overload", "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"content\":[]}]}}\n\n" + recoveryOverload, 503, false, true, 0},
 		{"created_with_text_then_overload", "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}]}}\n\n" + recoveryOverload, 503, true, true, 0},
 		{"structural_metadata_then_overload", recoveryCreated + recoveryStructuralMetadata + recoveryOverload, 503, false, true, 0},
+		{"encrypted_reasoning_state_then_overload", recoveryCreated + "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"opaque\"}}\n\n" + recoveryOverload, 503, false, true, 0},
 		{"failed_nested", recoveryCreated + "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"overload\"}}}\n\n", 503, false, true, 0},
 		{"empty_eof", "", 502, false, true, 0},
 		{"preamble_eof", recoveryCreated, 502, false, true, 0},

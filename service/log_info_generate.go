@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -46,7 +47,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	other["user_group_ratio"] = userGroupRatio
 	other["frt"] = float64(relayInfo.FirstResponseTime.UnixMilli() - relayInfo.StartTime.UnixMilli())
 	streamSucceeded := relayInfo.StreamStatus == nil || (relayInfo.StreamStatus.IsNormalEnd() && !relayInfo.StreamStatus.HasErrors())
-	if ctx != nil && ctx.Request != nil && ctx.Request.URL != nil && ctx.Request.URL.Path == "/v1/responses" && relayInfo.ChannelId > 0 && relayInfo.HasSendResponse() && streamSucceeded {
+	if relayInfo.ChannelId > 0 && relayInfo.HasSendResponse() && streamSucceeded {
 		ObserveChannelRuntimeResult(relayInfo.UsingGroup, relayInfo.OriginModelName, relayInfo.ChannelId,
 			time.Duration(other["frt"].(float64))*time.Millisecond, 200, true)
 	}
@@ -65,6 +66,10 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 
 	adminInfo := make(map[string]interface{})
 	adminInfo["use_channel"] = ctx.GetStringSlice("use_channel")
+	if operation_setting.GetMonitorSetting().DynamicChannelWeightEnabled && relayInfo.ChannelId > 0 {
+		adminInfo["dynamic_channel_weight_enabled"] = true
+		adminInfo["dynamic_channel_weight_channel_id"] = relayInfo.ChannelId
+	}
 	isMultiKey := common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey)
 	if isMultiKey {
 		adminInfo["is_multi_key"] = true

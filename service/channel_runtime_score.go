@@ -1,12 +1,16 @@
 package service
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"math"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 )
@@ -14,10 +18,10 @@ import (
 // channelRuntimeSample is intentionally small: the scorer only needs a recent
 // FRT and outcome, not request content or any credential-related data.
 type channelRuntimeSample struct {
-	at         time.Time
-	frt        time.Duration
-	success    bool
-	statusCode int
+	At         int64 `json:"at"`
+	FRTMs      int64 `json:"frt_ms"`
+	Success    bool  `json:"success"`
+	StatusCode int   `json:"status_code"`
 }
 
 var channelRuntimeScores = struct {
@@ -29,25 +33,30 @@ func channelRuntimeKey(group, modelName string, channelID int) string {
 	return group + "\x00" + modelName + "\x00" + strconv.Itoa(channelID)
 }
 
+func channelRuntimeRedisKey(group, modelName string, channelID int) string {
+	sum := sha256.Sum256([]byte(channelRuntimeKey(group, modelName, channelID)))
+	return "new-api:channel-runtime-score:v1:" + hex.EncodeToString(sum[:])
+}
+
 // ObserveChannelRuntimeResult records one completed or failed upstream attempt.
-// It is process-local by design; the feature is disabled by default and can be
-// enabled after validating the score behavior on the active instance set.
+// Redis is the shared source when available; the process-local store remains a
+// fallback for single-instance or Redis-degraded operation.
 func ObserveChannelRuntimeResult(group, modelName string, channelID int, frt time.Duration, statusCode int, success bool) {
 	if !operation_setting.GetMonitorSetting().DynamicChannelWeightEnabled || channelID <= 0 {
 		return
 	}
 	now := time.Now()
 	key := channelRuntimeKey(group, modelName, channelID)
+	sample := channelRuntimeSample{At: now.UnixMilli(), FRTMs: frt.Milliseconds(), Success: success, StatusCode: statusCode}
 	channelRuntimeScores.Lock()
-	defer channelRuntimeScores.Unlock()
 	window := time.Duration(operation_setting.GetMonitorSetting().DynamicChannelWeightWindowMinutes) * time.Minute
 	if window <= 0 {
 		window = 15 * time.Minute
 	}
-	samples := append(channelRuntimeScores.items[key], channelRuntimeSample{at: now, frt: frt, success: success, statusCode: statusCode})
-	cutoff := now.Add(-window)
+	samples := append(channelRuntimeScores.items[key], sample)
+	cutoff := now.Add(-window).UnixMilli()
 	first := 0
-	for first < len(samples) && samples[first].at.Before(cutoff) {
+	for first < len(samples) && samples[first].At < cutoff {
 		first++
 	}
 	if first > 0 {
@@ -57,6 +66,49 @@ func ObserveChannelRuntimeResult(group, modelName string, channelID int, frt tim
 		samples = samples[len(samples)-2000:]
 	}
 	channelRuntimeScores.items[key] = samples
+	channelRuntimeScores.Unlock()
+	if common.RedisEnabled && common.RDB != nil {
+		payload, err := common.Marshal(sample)
+		if err == nil {
+			redisKey := channelRuntimeRedisKey(group, modelName, channelID)
+			ctx := context.Background()
+			pipe := common.RDB.TxPipeline()
+			pipe.RPush(ctx, redisKey, string(payload))
+			pipe.LTrim(ctx, redisKey, -2000, -1)
+			pipe.Expire(ctx, redisKey, window+time.Minute)
+			if _, err = pipe.Exec(ctx); err != nil {
+				common.SysError("dynamic channel weight redis write failed")
+			}
+		}
+	}
+}
+
+func loadChannelRuntimeSamples(group, modelName string, channelID int, cutoff int64) []channelRuntimeSample {
+	if common.RedisEnabled && common.RDB != nil {
+		values, err := common.RDB.LRange(context.Background(), channelRuntimeRedisKey(group, modelName, channelID), 0, -1).Result()
+		if err == nil {
+			samples := make([]channelRuntimeSample, 0, len(values))
+			for _, value := range values {
+				var sample channelRuntimeSample
+				if common.UnmarshalJsonStr(value, &sample) == nil && sample.At >= cutoff {
+					samples = append(samples, sample)
+				}
+			}
+			if len(samples) > 0 {
+				return samples
+			}
+		}
+	}
+	channelRuntimeScores.RLock()
+	defer channelRuntimeScores.RUnlock()
+	local := channelRuntimeScores.items[channelRuntimeKey(group, modelName, channelID)]
+	samples := make([]channelRuntimeSample, 0, len(local))
+	for _, sample := range local {
+		if sample.At >= cutoff {
+			samples = append(samples, sample)
+		}
+	}
+	return samples
 }
 
 // EffectiveChannelWeight returns the configured weight adjusted by recent
@@ -76,30 +128,27 @@ func EffectiveChannelWeight(ch *model.Channel, group, modelName string) int {
 		window = 15 * time.Minute
 	}
 	cutoff := time.Now().Add(-window)
-	key := channelRuntimeKey(group, modelName, ch.Id)
-	channelRuntimeScores.RLock()
-	samples := channelRuntimeScores.items[key]
+	samples := loadChannelRuntimeSamples(group, modelName, ch.Id, cutoff.UnixMilli())
 	var count, successCount, throttledCount, serverErrorCount int
 	frts := make([]time.Duration, 0, len(samples))
 	for _, sample := range samples {
-		if sample.at.Before(cutoff) {
+		if sample.At < cutoff.UnixMilli() {
 			continue
 		}
 		count++
-		if sample.success {
+		if sample.Success {
 			successCount++
 		}
-		if sample.frt > 0 {
-			frts = append(frts, sample.frt)
+		if sample.FRTMs > 0 {
+			frts = append(frts, time.Duration(sample.FRTMs)*time.Millisecond)
 		}
-		if sample.statusCode == 429 {
+		if sample.StatusCode == 429 {
 			throttledCount++
 		}
-		if sample.statusCode >= 500 {
+		if sample.StatusCode >= 500 {
 			serverErrorCount++
 		}
 	}
-	channelRuntimeScores.RUnlock()
 	minSamples := setting.DynamicChannelWeightMinSamples
 	if minSamples < 1 || count < minSamples {
 		return base

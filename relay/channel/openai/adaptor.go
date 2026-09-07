@@ -26,6 +26,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/common_handler"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	relayhelper "github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/reasoning"
@@ -572,6 +573,17 @@ func detectImageMimeType(filename string) string {
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
+	// Responses requests can be retried through OpenAI-compatible gateways that
+	// do not understand provider-bound reasoning/compaction state. Sanitize the
+	// per-attempt copy here so OpenAI, OpenRouter and Xinference paths receive
+	// the same protection as the native DeepSeek/xAI adaptors.
+	removedReasoning, removedCompaction, err := relayhelper.StripForeignResponsesState(&request)
+	if err != nil {
+		return nil, err
+	}
+	if removedReasoning+removedCompaction > 0 && c != nil {
+		logger.LogInfo(c, fmt.Sprintf("OpenAI-compatible Responses request removed provider-bound state: reasoning=%d compaction=%d", removedReasoning, removedCompaction))
+	}
 	//  转换模型推理力度后缀
 	effort, originModel := reasoning.ParseOpenAIReasoningEffortFromModelSuffix(request.Model)
 	if effort != "" {

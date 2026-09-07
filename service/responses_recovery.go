@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -54,6 +55,9 @@ func ResponsesRouteCooling(group, modelName string, id int) bool {
 
 func selectResponsesRecoveryChannel(c *gin.Context, group, modelName string, retry int) (*model.Channel, error) {
 	if !ResponsesRecoveryEnabled(c) {
+		if operation_setting.GetMonitorSetting().DynamicChannelWeightEnabled {
+			return selectDynamicChannel(group, modelName, retry)
+		}
 		return model.GetRandomSatisfiedChannel(group, modelName, retry)
 	}
 	candidates, err := model.RecoveryCandidates(group, modelName)
@@ -110,6 +114,64 @@ func selectResponsesRecoveryChannel(c *gin.Context, group, modelName string, ret
 		}
 	}
 	return nil, nil
+}
+
+// selectDynamicChannel applies runtime health weighting to the ordinary
+// selection path as well as Responses recovery. Priority tiers remain
+// authoritative; dynamic health only changes probability within the selected
+// tier so a degraded channel cannot silently outrank an explicitly preferred
+// tier.
+func selectDynamicChannel(group, modelName string, retry int) (*model.Channel, error) {
+	candidates, err := model.RecoveryCandidates(group, modelName)
+	if err != nil || len(candidates) == 0 {
+		return nil, err
+	}
+	priorities := make(map[int64]struct{}, len(candidates))
+	for _, ch := range candidates {
+		priorities[ch.GetPriority()] = struct{}{}
+	}
+	sortedPriorities := make([]int64, 0, len(priorities))
+	for priority := range priorities {
+		sortedPriorities = append(sortedPriorities, priority)
+	}
+	// sort.Slice is used instead of relying on database/cache ordering.
+	sort.Slice(sortedPriorities, func(i, j int) bool { return sortedPriorities[i] > sortedPriorities[j] })
+	if retry < 0 {
+		retry = 0
+	}
+	if retry >= len(sortedPriorities) {
+		retry = len(sortedPriorities) - 1
+	}
+	targetPriority := sortedPriorities[retry]
+	eligible := make([]*model.Channel, 0, len(candidates))
+	weights := make(map[int]int, len(candidates))
+	total := 0
+	for _, ch := range candidates {
+		if ch.GetPriority() != targetPriority {
+			continue
+		}
+		weight := EffectiveChannelWeight(ch, group, modelName)
+		if weight < 1 {
+			weight = 1
+		}
+		eligible = append(eligible, ch)
+		weights[ch.Id] = weight
+		total += weight
+	}
+	if len(eligible) == 0 {
+		return nil, nil
+	}
+	if total <= 0 {
+		return eligible[common.GetRandomInt(len(eligible))], nil
+	}
+	n := common.GetRandomInt(total)
+	for _, ch := range eligible {
+		n -= weights[ch.Id]
+		if n < 0 {
+			return ch, nil
+		}
+	}
+	return eligible[len(eligible)-1], nil
 }
 
 // ResponsesRecoveryChannelSupported gates recovery to adaptors that can

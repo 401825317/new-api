@@ -192,7 +192,10 @@ func responsesStructuralPreamble(data, eventType string, usage *dto.Usage) bool 
 }
 
 func responsesItemHasConsumableOutput(item gjson.Result) bool {
-	if item.Get("arguments").String() != "" || item.Get("result").String() != "" || item.Get("encrypted_content").String() != "" {
+	// encrypted_content is opaque provider-bound reasoning state. It must not
+	// commit a stream before visible text, tool arguments/results, or media are
+	// released; otherwise a later response.failed suppresses safe recovery.
+	if item.Get("arguments").String() != "" || item.Get("result").String() != "" {
 		return true
 	}
 	for _, path := range []string{"content", "summary"} {
@@ -210,7 +213,7 @@ func responsesEventHasConsumableOutput(data string, usage *dto.Usage) bool {
 		return true
 	}
 	root := gjson.Parse(data)
-	for _, path := range []string{"delta", "text", "refusal", "arguments", "result", "encrypted_content", "partial_image_b64", "audio", "image_url"} {
+	for _, path := range []string{"delta", "text", "refusal", "arguments", "result", "partial_image_b64", "audio", "image_url"} {
 		if value := root.Get(path); value.Exists() && value.String() != "" {
 			return true
 		}
@@ -435,10 +438,16 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 				pendingDiagnosticLogged = true
 				logger.LogInfo(c, fmt.Sprintf("responses recovery: buffering structural preamble frames=%d bytes=%d", prospectiveFrames, prospectiveBytes))
 			}
-			if !outcome.Committed && isPreamble && prospectiveBytes <= 256<<10 {
-				pending = append(pending, f)
-				pendingBytes = prospectiveBytes
-				continue
+			if !outcome.Committed && isPreamble {
+				if prospectiveBytes <= 256<<10 {
+					pending = append(pending, f)
+					pendingBytes = prospectiveBytes
+					continue
+				}
+				// Never flush structural preamble merely because the buffer is
+				// large. Keep the client stream untouched and let the outer
+				// recovery loop try the next eligible channel.
+				return fail(types.NewOpenAIError(fmt.Errorf("Responses structural preamble exceeded recovery buffer"), types.ErrorCodeBadResponse, 502), "responses_preoutput_buffer_exceeded", true, nil)
 			}
 			if flush(event.Type) != nil {
 				return clientGone()
