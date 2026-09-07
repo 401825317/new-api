@@ -1,7 +1,6 @@
 package deepseek
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/setting/reasoning"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -185,55 +185,7 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 }
 
 func stripForeignResponsesState(request *dto.OpenAIResponsesRequest) (removedReasoning int, removedCompaction int, err error) {
-	if request == nil || len(request.Input) == 0 {
-		return 0, 0, nil
-	}
-
-	var input []json.RawMessage
-	if err := json.Unmarshal(request.Input, &input); err != nil {
-		// The Responses API also accepts a plain input string. Leave non-array input untouched.
-		return 0, 0, nil
-	}
-
-	filtered := make([]json.RawMessage, 0, len(input))
-	for _, rawItem := range input {
-		var item map[string]json.RawMessage
-		if err := json.Unmarshal(rawItem, &item); err != nil {
-			filtered = append(filtered, rawItem)
-			continue
-		}
-
-		var itemType string
-		_ = json.Unmarshal(item["type"], &itemType)
-		if itemType != "reasoning" && itemType != "compaction" && itemType != "compaction_summary" {
-			filtered = append(filtered, rawItem)
-			continue
-		}
-
-		var encryptedContent string
-		if encryptedRaw, ok := item["encrypted_content"]; ok {
-			_ = json.Unmarshal(encryptedRaw, &encryptedContent)
-		}
-		if encryptedContent == "" {
-			filtered = append(filtered, rawItem)
-			continue
-		}
-
-		if itemType == "reasoning" {
-			removedReasoning++
-		} else {
-			removedCompaction++
-		}
-	}
-
-	if removedReasoning+removedCompaction == 0 {
-		return 0, 0, nil
-	}
-	request.Input, err = json.Marshal(filtered)
-	if err != nil {
-		return 0, 0, fmt.Errorf("marshal DeepSeek Responses fallback input: %w", err)
-	}
-	return removedReasoning, removedCompaction, nil
+	return helper.StripForeignResponsesState(request)
 }
 
 func applyDeepSeekV4ResponsesThinkingSuffix(info *relaycommon.RelayInfo, request *dto.OpenAIResponsesRequest) {

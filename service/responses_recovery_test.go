@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -46,4 +47,25 @@ func TestResponsesRecoveryCooldownIsolation(t *testing.T) {
 	HandleResponsesRecoveryFailure(c, info, err)
 	require.False(t, ResponsesRouteCooling(group, "model-a", 72))
 	require.Eventually(t, func() bool { return !ResponsesRouteCooling(group, "model-a", 71) }, 3*time.Second, 20*time.Millisecond)
+}
+
+func TestResponsesRecoveryChannelSupported(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		typ  int
+		want bool
+	}{
+		{name: "openai", typ: constant.ChannelTypeOpenAI, want: true},
+		{name: "deepseek", typ: constant.ChannelTypeDeepSeek, want: true},
+		{name: "grok", typ: constant.ChannelTypeXai, want: true},
+		{name: "codex", typ: constant.ChannelTypeCodex, want: true},
+		{name: "claude", typ: constant.ChannelTypeAnthropic, want: false},
+		{name: "gemini", typ: constant.ChannelTypeGemini, want: false},
+		{name: "qwen", typ: constant.ChannelTypeAli, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			channel := &model.Channel{Type: tc.typ}
+			require.Equal(t, tc.want, ResponsesRecoveryChannelSupported(channel))
+		})
+	}
 }

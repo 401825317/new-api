@@ -67,6 +67,9 @@ func selectResponsesRecoveryChannel(c *gin.Context, group, modelName string, ret
 	var eligible []*model.Channel
 	var priority int64
 	for _, ch := range candidates {
+		if !ResponsesRecoveryChannelSupported(ch) {
+			continue
+		}
 		if used[strconv.Itoa(ch.Id)] || ResponsesRouteCooling(group, modelName, ch.Id) {
 			continue
 		}
@@ -107,6 +110,27 @@ func selectResponsesRecoveryChannel(c *gin.Context, group, modelName string, ret
 		}
 	}
 	return nil, nil
+}
+
+// ResponsesRecoveryChannelSupported gates recovery to adaptors that can
+// consume and emit the OpenAI Responses protocol. Claude/Gemini/Qwen channels
+// may support other endpoints, but their Responses converters are not
+// complete and must not receive a replayed Responses body.
+func ResponsesRecoveryChannelSupported(ch *model.Channel) bool {
+	if ch == nil {
+		return false
+	}
+	apiType, ok := common.ChannelType2APIType(ch.Type)
+	if !ok {
+		return false
+	}
+	switch apiType {
+	case constant.APITypeOpenAI, constant.APITypeOpenRouter, constant.APITypeXinference,
+		constant.APITypeDeepSeek, constant.APITypeXai, constant.APITypeCodex:
+		return true
+	default:
+		return false
+	}
 }
 
 // Only transient upstream failures penalize the route; invalid inputs and client

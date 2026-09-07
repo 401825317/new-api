@@ -2,14 +2,17 @@ package xai
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/QuantumNous/new-api/relay/constant"
@@ -101,6 +104,13 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
+	removedReasoning, removedCompaction, err := helper.StripForeignResponsesState(&request)
+	if err != nil {
+		return nil, err
+	}
+	if removedReasoning+removedCompaction > 0 && c != nil {
+		logger.LogInfo(c, fmt.Sprintf("xAI responses fallback removed provider-bound state: reasoning=%d compaction=%d", removedReasoning, removedCompaction))
+	}
 	if request.Model == "" && info != nil {
 		request.Model = info.UpstreamModelName
 	}
