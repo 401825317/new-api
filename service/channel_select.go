@@ -12,16 +12,11 @@ import (
 )
 
 type RetryParam struct {
-	Ctx         *gin.Context
-	TokenGroup  string
-	ModelName   string
-	RequestPath string
-	// PreferredChannelType is a first-attempt preference for a continuation
-	// whose provider-bound reasoning state can only be understood by one
-	// upstream family. Normal priority selection remains the fallback.
-	PreferredChannelType int
-	Retry                *int
-	resetNextTry         bool
+	Ctx          *gin.Context
+	TokenGroup   string
+	ModelName    string
+	Retry        *int
+	resetNextTry bool
 }
 
 func (p *RetryParam) GetRetry() int {
@@ -120,7 +115,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = getRandomSatisfiedChannelForAttempt(autoGroup, param, priorityRetry)
+			channel, _ = selectResponsesRecoveryChannel(param.Ctx, autoGroup, param.ModelName, priorityRetry)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -158,26 +153,10 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = getRandomSatisfiedChannelForAttempt(param.TokenGroup, param, param.GetRetry())
+		channel, err = selectResponsesRecoveryChannel(param.Ctx, param.TokenGroup, param.ModelName, param.GetRetry())
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}
 	}
 	return channel, selectGroup, nil
-}
-
-func getRandomSatisfiedChannelForAttempt(group string, param *RetryParam, retry int) (*model.Channel, error) {
-	if param != nil && retry == 0 && param.PreferredChannelType > 0 {
-		channel, err := model.GetRandomSatisfiedChannelByType(
-			group,
-			param.ModelName,
-			retry,
-			param.RequestPath,
-			param.PreferredChannelType,
-		)
-		if err != nil || channel != nil {
-			return channel, err
-		}
-	}
-	return model.GetRandomSatisfiedChannel(group, param.ModelName, retry, param.RequestPath)
 }

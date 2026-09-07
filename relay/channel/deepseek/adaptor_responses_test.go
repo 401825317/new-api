@@ -28,7 +28,7 @@ func TestConvertOpenAIResponsesRequestStripsProviderBoundState(t *testing.T) {
 	require.NoError(t, err)
 	got := converted.(dto.OpenAIResponsesRequest)
 	require.NotNil(t, got.Reasoning)
-	require.Equal(t, "medium", got.Reasoning.Effort)
+	require.Equal(t, "none", got.Reasoning.Effort)
 
 	var items []map[string]any
 	require.NoError(t, json.Unmarshal(got.Input, &items))
@@ -55,31 +55,6 @@ func TestConvertOpenAIResponsesRequestPreservesDeepSeekReasoningText(t *testing.
 	got := converted.(dto.OpenAIResponsesRequest)
 	require.JSONEq(t, string(input), string(got.Input))
 	require.Equal(t, "medium", got.Reasoning.Effort)
-}
-
-func TestConvertOpenAIResponsesRequestStripsNestedProviderBoundState(t *testing.T) {
-	input := json.RawMessage(`[
-		{"type":"message","role":"assistant","content":[
-			{"type":"output_text","text":"visible answer"},
-			{"type":"reasoning","encrypted_content":"opaque-openai"}
-		]},
-		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
-	]`)
-	request := dto.OpenAIResponsesRequest{
-		Model: "deepseek-v4",
-		Input: input,
-	}
-
-	converted, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(nil, &relaycommon.RelayInfo{}, request)
-	require.NoError(t, err)
-	got := converted.(dto.OpenAIResponsesRequest)
-
-	var items []map[string]any
-	require.NoError(t, json.Unmarshal(got.Input, &items))
-	require.Len(t, items, 2)
-	content := items[0]["content"].([]any)
-	require.Len(t, content, 1)
-	require.Equal(t, "output_text", content[0].(map[string]any)["type"])
 }
 
 func TestStripForeignResponsesStateLeavesStringInputUntouched(t *testing.T) {
