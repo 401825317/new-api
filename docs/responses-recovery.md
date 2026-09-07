@@ -7,14 +7,15 @@ Base: `v0.13.1-patch.1`. Production is not modified by this branch.
 
 - Enable with `RESPONSES_STREAM_RECOVERY_ENABLED=true` on an isolated service.
 - Only native streaming `POST /v1/responses` is in scope. Other endpoints and non-streaming requests retain official behavior.
-- Buffer only empty `response.created` / `response.in_progress` preambles (64 KiB maximum). Do not send pre-output pings or SSE headers.
+- Buffer structural `response.created` / `response.in_progress` / empty tool metadata preambles (256 KiB maximum). Do not commit or send pre-output metadata as semantic output.
 - Recognize `error`, `response.error`, `response.failed`, incomplete/cancelled responses, malformed events and missing successful terminal events.
-- Before downstream commitment: return transient failures to the existing retry loop. Never retry the same channel within a request. Select the highest remaining eligible priority, weighted within that tier.
+- Before downstream commitment: return transient failures to the recovery retry loop. 429, 500-503 and other transient 5xx may switch channel; 504/524 are excluded by default because the upstream may already have executed the request. Never retry the same channel within a request. Select the highest remaining eligible priority, weighted within that tier.
 - After commitment or reported usage: never replay. Forward the failure once, or synthesize a Responses error for a truncated stream. Record failure separately from usage settlement.
 - Invalid input, normal incomplete responses, client cancellation and requests using `previous_response_id` do not replay. All retries still obey configured status-code rules, affinity skip-retry and specific-channel constraints.
 - Successful terminal events must have `response.status=completed`; stop immediately instead of waiting for TCP EOF.
 - Penalize a transient failure for its group/model/channel only, default 30 seconds (`RESPONSES_RECOVERY_COOLDOWN_SECONDS`, range 1-300). No account/channel is forcibly enabled.
 - Cooldown suppresses stale affinity temporarily. Failed requests do not refresh affinity; successful fallback binds its actual channel. No unsafe GET-then-DELETE of a concurrent successful binding.
+- Optional dynamic channel weighting can adjust only the effective weight inside one priority tier. It uses a process-local recent window of real Responses FRT and outcomes, requires a minimum sample count, and never writes over operator-configured `priority`/`weight`. It is disabled by default and is configured under the monitoring settings page.
 - Pre-output body deadline defaults to 90 seconds (`RESPONSES_RECOVERY_PREOUTPUT_SECONDS`, range 1-300). It starts after response headers. Configure the normal relay HTTP timeout as well to bound connection/header waits.
 - Redis mode shares cooldown between instances. Without Redis, cooldown is process-local and bounded to 10,000 routes. Do not use production Redis for the lab.
 

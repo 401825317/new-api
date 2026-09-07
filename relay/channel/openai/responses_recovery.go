@@ -175,24 +175,66 @@ func responsesStructuralPreamble(data, eventType string, usage *dto.Usage) bool 
 	root := gjson.Parse(data)
 	switch eventType {
 	case "response.created", "response.queued", "response.in_progress":
-		return root.Get("response.output.#").Int() == 0
-	case dto.ResponsesOutputTypeItemAdded:
-		item := root.Get("item")
-		if item.Get("arguments").String() != "" || item.Get("result").String() != "" {
-			return false
-		}
-		for _, content := range item.Get("content").Array() {
-			if content.Get("text").String() != "" || content.Get("refusal").String() != "" || content.Get("audio").Exists() || content.Get("image_url").String() != "" {
+		for _, item := range root.Get("response.output").Array() {
+			if responsesItemHasConsumableOutput(item) {
 				return false
 			}
 		}
 		return true
+	case dto.ResponsesOutputTypeItemAdded:
+		return !responsesItemHasConsumableOutput(root.Get("item"))
 	case "response.content_part.added", "response.reasoning_summary_part.added":
 		part := root.Get("part")
 		return part.Get("text").String() == "" && part.Get("refusal").String() == "" && !part.Get("audio").Exists() && part.Get("image_url").String() == ""
 	default:
 		return false
 	}
+}
+
+func responsesItemHasConsumableOutput(item gjson.Result) bool {
+	if item.Get("arguments").String() != "" || item.Get("result").String() != "" || item.Get("encrypted_content").String() != "" {
+		return true
+	}
+	for _, path := range []string{"content", "summary"} {
+		for _, part := range item.Get(path).Array() {
+			if part.Get("text").String() != "" || part.Get("refusal").String() != "" || part.Get("audio").Exists() || part.Get("image_url").String() != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func responsesEventHasConsumableOutput(data string, usage *dto.Usage) bool {
+	if usage != nil && usage.TotalTokens > 0 {
+		return true
+	}
+	root := gjson.Parse(data)
+	for _, path := range []string{"delta", "text", "refusal", "arguments", "result", "encrypted_content", "partial_image_b64", "audio", "image_url"} {
+		if value := root.Get(path); value.Exists() && value.String() != "" {
+			return true
+		}
+	}
+	if responsesItemHasConsumableOutput(root.Get("item")) {
+		return true
+	}
+	for _, item := range root.Get("output").Array() {
+		if responsesItemHasConsumableOutput(item) {
+			return true
+		}
+	}
+	for _, item := range root.Get("response.output").Array() {
+		if responsesItemHasConsumableOutput(item) {
+			return true
+		}
+	}
+	if responsesItemHasConsumableOutput(root.Get("response")) {
+		return true
+	}
+	if part := root.Get("part"); part.Exists() {
+		return part.Get("text").String() != "" || part.Get("refusal").String() != "" || part.Get("audio").Exists() || part.Get("image_url").String() != ""
+	}
+	return false
 }
 
 func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -202,15 +244,22 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	info.ResponsesRecovery = outcome
 	info.StreamStatus = relaycommon.NewStreamStatus()
 	finish := func(err *types.NewAPIError, reason relaycommon.StreamEndReason, penalize bool) (*dto.Usage, *types.NewAPIError) {
-		outcome.Error, outcome.Penalize = err, penalize
 		if err != nil {
+			stateful := false
 			if request, ok := info.Request.(*dto.OpenAIResponsesRequest); ok && request.PreviousResponseID != "" {
 				err = types.WithOpenAIError(err.ToOpenAIError(), err.StatusCode, types.ErrOptionWithSkipRetry())
-				outcome.Error = err
+				stateful = true
+			}
+			// Once a semantic event is released, the client must receive the real
+			// upstream error but this request must never be replayed on another
+			// channel. Preserve that decision on the recorded outcome as well.
+			if outcome.Committed && !stateful {
+				err = types.WithOpenAIError(err.ToOpenAIError(), err.StatusCode, types.ErrOptionWithSkipRetry())
 			}
 			info.StreamStatus.RecordError(err.MaskSensitiveError())
 			c.Set("responses_recovery_failed", true)
 		}
+		outcome.Error, outcome.Penalize = err, penalize
 		var endErr error
 		if err != nil {
 			endErr = err
@@ -255,6 +304,7 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	defer ping.Stop()
 	var pending []recoveryFrame
 	pendingBytes := 0
+	pendingDiagnosticLogged := false
 	sequence := int64(-1)
 	commit := func(eventType string) {
 		if !outcome.Committed {
@@ -375,10 +425,16 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 			if terminal && (event.Response == nil || gjson.Get(f.data, "response.status").String() != "completed") {
 				return fail(types.NewOpenAIError(fmt.Errorf("invalid Responses terminal status"), types.ErrorCodeBadResponse, 502), "responses_invalid_event", true, nil)
 			}
-			isPreamble := responsesStructuralPreamble(f.data, event.Type, usage)
-			if !outcome.Committed && isPreamble && pendingBytes+len(f.data) < 64<<10 {
+			isPreamble := responsesStructuralPreamble(f.data, event.Type, usage) || (!terminal && !responsesEventHasConsumableOutput(f.data, usage))
+			prospectiveFrames := len(pending) + 1
+			prospectiveBytes := pendingBytes + len(f.data)
+			if !outcome.Committed && isPreamble && !pendingDiagnosticLogged && (prospectiveFrames > 10 || prospectiveBytes > 128<<10) {
+				pendingDiagnosticLogged = true
+				logger.LogInfo(c, fmt.Sprintf("responses recovery: buffering structural preamble frames=%d bytes=%d", prospectiveFrames, prospectiveBytes))
+			}
+			if !outcome.Committed && isPreamble && prospectiveBytes <= 256<<10 {
 				pending = append(pending, f)
-				pendingBytes += len(f.data)
+				pendingBytes = prospectiveBytes
 				continue
 			}
 			if flush(event.Type) != nil {

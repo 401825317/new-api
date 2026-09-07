@@ -30,13 +30,47 @@ func TestResponsesRecoveryFullRelay(t *testing.T) {
 	}
 }
 
+func TestShouldRetryResponsesRecoveryTransientFailures(t *testing.T) {
+	t.Setenv("RESPONSES_STREAM_RECOVERY_ENABLED", "true")
+	newContext := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		c.Set("responses_recovery_stream_request", true)
+		return c
+	}
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable} {
+		c := newContext()
+		err := types.NewOpenAIError(fmt.Errorf("transient"), types.ErrorCodeBadResponse, status)
+		require.True(t, shouldRetry(c, err, 0), "status %d must exhaust recovery candidates despite RetryTimes=0", status)
+	}
+	for _, status := range []int{http.StatusGatewayTimeout, 524} {
+		c := newContext()
+		err := types.NewOpenAIError(fmt.Errorf("late timeout"), types.ErrorCodeBadResponse, status)
+		require.False(t, shouldRetry(c, err, 0), "status %d must not replay a potentially executed request", status)
+	}
+	c := newContext()
+	c.Set("specific_channel_id", 1)
+	require.False(t, shouldRetry(c, types.NewOpenAIError(fmt.Errorf("rate limited"), types.ErrorCodeBadResponse, 429), 5))
+	c = newContext()
+	c.Set("channel_affinity_skip_retry_on_failure", true)
+	require.False(t, shouldRetry(c, types.NewOpenAIError(fmt.Errorf("rate limited"), types.ErrorCodeBadResponse, 429), 0))
+	c = newContext()
+	c.Set("responses_recovery_stateful", true)
+	require.False(t, shouldRetry(c, types.NewOpenAIError(fmt.Errorf("rate limited"), types.ErrorCodeBadResponse, 429), 5))
+	c = newContext()
+	err := types.NewOpenAIError(fmt.Errorf("invalid"), types.ErrorCodeBadResponse, 400, types.ErrOptionWithSkipRetry())
+	require.False(t, shouldRetry(c, err, 5))
+}
+
 func runResponsesRecoveryFullRelay(t *testing.T, cached bool) {
 	t.Setenv("RESPONSES_STREAM_RECOVERY_ENABLED", "true")
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.Log{}))
 	oldMemory, oldRetries, oldCount, oldErrorLogs := common.MemoryCacheEnabled, common.RetryTimes, constant.CountToken, constant.ErrorLogEnabled
 	common.MemoryCacheEnabled = cached
-	common.RetryTimes = 5
+	// Recovery must exhaust distinct pre-output routes even when the normal
+	// global retry budget would have stopped after the first failure.
+	common.RetryTimes = 0
 	constant.CountToken = false
 	constant.ErrorLogEnabled = true
 	t.Cleanup(func() {
@@ -59,13 +93,13 @@ func runResponsesRecoveryFullRelay(t *testing.T, cached bool) {
 	oldRatios := ratio_setting.ModelRatio2JSONString()
 	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"gpt-4o-mini":1}`))
 	t.Cleanup(func() { _ = ratio_setting.UpdateModelRatioByJSONString(oldRatios) })
-	var a, b atomic.Int32
+	var a, b, third atomic.Int32
 	var partial, allFail atomic.Bool
 	var barrier chan struct{}
 	var arriving atomic.Int32
 	pre := "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"output\":[]}}\n\n"
 	delta := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"
-	failure := "data: {\"type\":\"error\",\"error\":{\"type\":\"service_unavailable_error\",\"code\":\"server_error\",\"message\":\"overloaded\"}}\n\n"
+	failure := "data: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"code\":\"rate_limit_exceeded\",\"message\":\"rate limited\"}}\n\n"
 	complete := "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.Add(1)
@@ -97,6 +131,16 @@ func runResponsesRecoveryFullRelay(t *testing.T, cached bool) {
 		}
 	}))
 	defer second.Close()
+	thirdServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		third.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if allFail.Load() {
+			io.WriteString(w, failure)
+			return
+		}
+		io.WriteString(w, pre+delta+complete)
+	}))
+	defer thirdServer.Close()
 	const balance = 1000000
 	user := model.User{Id: 781, Username: "recovery-lab", Quota: balance, Group: "default"}
 	token := model.Token{Id: 781, UserId: 781, Key: "local-test-only", RemainQuota: balance}
@@ -104,14 +148,17 @@ func runResponsesRecoveryFullRelay(t *testing.T, cached bool) {
 	require.NoError(t, db.Create(&token).Error)
 	runID := fmt.Sprint(time.Now().UnixNano())
 	group := "recovery-fallback-" + runID
-	addChannels := func(g string) {
-		for i, url := range []string{first.URL, second.URL} {
+	addChannels := func(g string) []int {
+		ids := make([]int, 0, 3)
+		for i, url := range []string{first.URL, second.URL, thirdServer.URL} {
 			ch := model.Channel{Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: fmt.Sprintf("lab-%s-%d", g, i), Key: "local-mock", BaseURL: &url, Models: "gpt-4o-mini", Group: g, Priority: common.GetPointer(int64(20 - i)), Weight: common.GetPointer(uint(100)), AutoBan: common.GetPointer(0)}
 			require.NoError(t, ch.Insert())
+			ids = append(ids, ch.Id)
 		}
 		model.InitChannelCache()
+		return ids
 	}
-	addChannels(group)
+	initialChannels := addChannels(group)
 	engine := gin.New()
 	engine.POST("/v1/responses", func(c *gin.Context) {
 		c.Set("id", 781)
@@ -134,8 +181,9 @@ func runResponsesRecoveryFullRelay(t *testing.T, cached bool) {
 	require.Equal(t, 200, w.Code, w.Body.String())
 	require.Equal(t, int32(1), a.Load())
 	require.Equal(t, int32(1), b.Load())
+	require.Equal(t, int32(0), third.Load())
 	require.Contains(t, w.Body.String(), "response.completed")
-	require.NotContains(t, w.Body.String(), "overloaded")
+	require.NotContains(t, w.Body.String(), "rate limited")
 	require.Equal(t, 1, strings.Count(w.Body.String(), "\"delta\":\"hello\""))
 	var consume, errorCount int64
 	require.NoError(t, db.Model(&model.Log{}).Where("type = ?", model.LogTypeConsume).Count(&consume).Error)
@@ -154,11 +202,12 @@ func runResponsesRecoveryFullRelay(t *testing.T, cached bool) {
 	probe.Set("responses_recovery_stream_request", true)
 	id, found := service.GetPreferredChannelByAffinity(probe, "gpt-4o-mini", group)
 	require.True(t, found)
-	require.Equal(t, 2, id, "affinity must follow successful fallback, not failed initial channel")
+	require.Equal(t, initialChannels[1], id, "affinity must follow successful fallback, not failed initial channel")
 	w = request()
 	require.Equal(t, 200, w.Code)
 	require.Equal(t, int32(1), a.Load())
 	require.Equal(t, int32(2), b.Load())
+	require.Equal(t, int32(0), third.Load())
 	group = "recovery-partial-" + runID
 	addChannels(group)
 	partial.Store(true)
@@ -166,7 +215,8 @@ func runResponsesRecoveryFullRelay(t *testing.T, cached bool) {
 	require.Equal(t, 200, w.Code)
 	require.Equal(t, int32(2), a.Load())
 	require.Equal(t, int32(2), b.Load())
-	require.Contains(t, w.Body.String(), "overloaded")
+	require.Equal(t, int32(0), third.Load(), "semantic output must not be replayed")
+	require.Contains(t, w.Body.String(), "rate limited")
 	require.NotContains(t, w.Body.String(), "response.completed")
 	partial.Store(false)
 	allFail.Store(true)
@@ -176,14 +226,16 @@ func runResponsesRecoveryFullRelay(t *testing.T, cached bool) {
 	require.NoError(t, db.First(&billed, 781).Error)
 	before = billed.Quota
 	w = request()
-	require.Equal(t, 503, w.Code, w.Body.String())
+	require.Equal(t, 429, w.Code, w.Body.String())
 	require.NotContains(t, w.Header().Get("Content-Type"), "text/event-stream")
 	require.Equal(t, int32(3), a.Load())
 	require.Equal(t, int32(3), b.Load())
+	require.Equal(t, int32(1), third.Load(), "third candidate must be tried after two pre-output failures")
 	require.Eventually(t, func() bool { var u model.User; return db.First(&u, 781).Error == nil && u.Quota == before }, time.Second*3, time.Millisecond*20, "failed request must refund reservation")
 	allFail.Store(false)
 	group = "recovery-concurrent-" + runID
-	addChannels(group)
+	concurrentChannels := addChannels(group)
+	concurrentFallbackChannelID := concurrentChannels[1]
 	barrier = make(chan struct{})
 	var wg sync.WaitGroup
 	results := make(chan *httptest.ResponseRecorder, 50)
@@ -197,13 +249,14 @@ func runResponsesRecoveryFullRelay(t *testing.T, cached bool) {
 	for result := range results {
 		require.Equal(t, 200, result.Code, result.Body.String())
 		require.Contains(t, result.Body.String(), "response.completed")
-		require.NotContains(t, result.Body.String(), "overloaded")
+		require.NotContains(t, result.Body.String(), "rate limited")
 		require.Equal(t, 1, strings.Count(result.Body.String(), "\"delta\":\"hello\""))
 	}
 	require.Equal(t, int32(53), a.Load())
 	require.Equal(t, int32(53), b.Load())
+	require.Equal(t, int32(1), third.Load())
 	var concurrentLogs []model.Log
-	require.NoError(t, db.Where("type = ? AND channel_id = ?", model.LogTypeConsume, 8).Find(&concurrentLogs).Error)
+	require.NoError(t, db.Where("type = ? AND channel_id = ?", model.LogTypeConsume, concurrentFallbackChannelID).Find(&concurrentLogs).Error)
 	require.Len(t, concurrentLogs, 50)
 	for _, entry := range concurrentLogs {
 		require.Equal(t, 18, entry.Quota)
@@ -216,9 +269,10 @@ func runResponsesRecoveryFullRelay(t *testing.T, cached bool) {
 		addChannels(group)
 		w = request()
 		require.Equal(t, 200, w.Code)
-		require.Contains(t, w.Body.String(), "overloaded")
+		require.Contains(t, w.Body.String(), "rate limited")
 		require.NotContains(t, w.Body.String(), "response.completed")
 		require.Equal(t, int32(54), a.Load())
 		require.Equal(t, int32(53), b.Load(), "official behavior must not switch on this SSE error")
+		require.Equal(t, int32(1), third.Load())
 	})
 }

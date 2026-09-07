@@ -45,6 +45,8 @@ func TestResponsesRecoveryEvents(t *testing.T) {
 		tokens             int
 	}{
 		{"incident_preoutput", recoveryCreated + recoveryOverload, 503, false, true, 0},
+		{"created_with_output_placeholder_then_overload", "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"content\":[]}]}}\n\n" + recoveryOverload, 503, false, true, 0},
+		{"created_with_text_then_overload", "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}]}}\n\n" + recoveryOverload, 503, true, true, 0},
 		{"structural_metadata_then_overload", recoveryCreated + recoveryStructuralMetadata + recoveryOverload, 503, false, true, 0},
 		{"failed_nested", recoveryCreated + "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"overload\"}}}\n\n", 503, false, true, 0},
 		{"empty_eof", "", 502, false, true, 0},
@@ -57,7 +59,9 @@ func TestResponsesRecoveryEvents(t *testing.T) {
 		{"output_error", recoveryCreated + recoveryDelta + recoveryOverload, 503, true, true, 0},
 		{"reasoning_output_error", recoveryCreated + recoveryStructuralMetadata + recoveryReasoningDelta + recoveryOverload, 503, true, true, 0},
 		{"output_eof", recoveryDelta, 502, true, true, 0},
-		{"unknown_event_no_replay", "data: {\"type\":\"response.tool_call.started\"}\n\n" + recoveryOverload, 503, true, true, 0},
+		{"metadata_event_then_overload", "data: {\"type\":\"codex.rate_limits\",\"limits\":{\"primary\":{\"used_percent\":10}}}\n\n" + recoveryOverload, 503, false, true, 0},
+		{"tool_started_without_arguments_then_overload", "data: {\"type\":\"response.tool_call.started\"}\n\n" + recoveryOverload, 503, false, true, 0},
+		{"image_output_then_overload", "data: {\"type\":\"response.image_generation_call.partial_image\",\"partial_image_b64\":\"abc\"}\n\n" + recoveryOverload, 503, true, true, 0},
 		{"invalid_request", "data: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad input\"}}\n\n", 400, false, false, 0},
 		{"incomplete", "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n", 400, false, false, 0},
 		{"failed_with_usage", "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n\n", 503, true, true, 12},
@@ -76,6 +80,7 @@ func TestResponsesRecoveryEvents(t *testing.T) {
 				require.Equal(t, tt.status, info.ResponsesRecovery.Error.StatusCode)
 				if tt.committed {
 					require.Nil(t, err)
+					require.True(t, types.IsSkipRetryError(info.ResponsesRecovery.Error), "committed stream errors must never be replayed")
 					require.True(t, strings.Contains(w.Body.String(), "event: error") || strings.Contains(w.Body.String(), "event: response.failed"))
 					require.NotContains(t, w.Body.String(), "response.completed")
 				} else {
@@ -97,6 +102,16 @@ func TestResponsesRecoveryEvents(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResponsesRecoveryBuffersLargeStructuralPreamble(t *testing.T) {
+	metadata := strings.Repeat("x", 200<<10)
+	body := "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"output\":[{\"type\":\"message\",\"content\":[],\"metadata\":\"" + metadata + "\"}]}}\n\n" + recoveryOverload
+	w, info, _, err := runRecovery(io.NopCloser(strings.NewReader(body)), context.Background(), "")
+	require.NotNil(t, err)
+	require.Equal(t, 503, err.StatusCode)
+	require.False(t, info.ResponsesRecovery.Committed)
+	require.Empty(t, w.Body.String())
 }
 
 func TestResponsesRecoveryCancellationAndStateful(t *testing.T) {

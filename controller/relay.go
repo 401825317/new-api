@@ -188,7 +188,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	for {
+		if !service.ResponsesRecoveryEnabled(c) && retryParam.GetRetry() > common.RetryTimes {
+			break
+		}
+		if service.ResponsesRecoveryEnabled(c) && retryParam.GetRetry() > 0 && c.GetBool("responses_recovery_exhausted") {
+			break
+		}
 		relayInfo.RetryIndex = retryParam.GetRetry()
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
@@ -241,6 +247,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
+		retryParam.IncreaseRetry()
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -314,6 +321,12 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 	if channel == nil {
+		if service.ResponsesRecoveryEnabled(c) && c.GetBool("responses_recovery_exhausted") {
+			if info.LastError != nil {
+				return nil, types.WithOpenAIError(info.LastError.ToOpenAIError(), info.LastError.StatusCode, types.ErrOptionWithSkipRetry())
+			}
+			return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的恢复候选渠道已耗尽", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+		}
 		if service.ResponsesRecoveryEnabled(c) && info.LastError != nil {
 			return nil, info.LastError
 		}
@@ -328,28 +341,37 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 }
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
-	if service.ResponsesRecoveryEnabled(c) && (c.Request.Context().Err() != nil || c.Writer.Written() || c.GetBool("responses_recovery_stateful")) {
+	recoveryEnabled := service.ResponsesRecoveryEnabled(c)
+	if recoveryEnabled && (c.Request.Context().Err() != nil || c.Writer.Written() || c.GetBool("responses_recovery_stateful")) {
 		return false
 	}
 	if openaiErr == nil {
 		return false
 	}
-	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
-		return false
-	}
-	if types.IsChannelError(openaiErr) {
-		return true
-	}
 	if types.IsSkipRetryError(openaiErr) {
-		return false
-	}
-	if retryTimes <= 0 {
 		return false
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {
 		return false
 	}
+	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+		return false
+	}
 	code := openaiErr.StatusCode
+	// Responses recovery has its own finite retry budget: every eligible
+	// channel is selected at most once through use_channel. Before semantic
+	// output, transient upstream failures therefore bypass the ordinary retry
+	// count and status-code list, while explicit affinity/specific-channel
+	// constraints remain authoritative.
+	if recoveryEnabled && (types.IsChannelError(openaiErr) || responsesRecoveryRetryableStatus(code) || code < 100 || code > 599) {
+		return true
+	}
+	if types.IsChannelError(openaiErr) {
+		return true
+	}
+	if retryTimes <= 0 {
+		return false
+	}
 	if code >= 200 && code < 300 {
 		return false
 	}
@@ -360,6 +382,18 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return false
 	}
 	return operation_setting.ShouldRetryByStatusCode(code)
+}
+
+// Timeout responses may mean the provider already executed the request and
+// only the proxy response arrived late, so do not replay them automatically.
+func responsesRecoveryRetryableStatus(code int) bool {
+	if code == http.StatusTooManyRequests {
+		return true
+	}
+	if code < 500 || code > 599 {
+		return false
+	}
+	return code != http.StatusGatewayTimeout && code != 524
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {

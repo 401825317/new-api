@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/cachex"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/samber/hot"
@@ -78,10 +79,15 @@ func selectResponsesRecoveryChannel(c *gin.Context, group, modelName string, ret
 		}
 	}
 	if len(eligible) == 0 {
+		c.Set("responses_recovery_exhausted", true)
 		return nil, nil
 	}
+	c.Set("responses_recovery_exhausted", false)
 	weight := 0
 	weightOf := func(ch *model.Channel) int {
+		if operation_setting.GetMonitorSetting().DynamicChannelWeightEnabled {
+			return EffectiveChannelWeight(ch, group, modelName)
+		}
 		if !common.MemoryCacheEnabled {
 			return ch.GetWeight() + 10
 		}
@@ -123,12 +129,13 @@ func HandleResponsesRecoveryFailure(c *gin.Context, info *relaycommon.RelayInfo,
 		return
 	}
 	c.Set("responses_recovery_failed", true)
-	if !penalize {
-		return
-	}
 	group := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 	if group == "auto" {
 		group = common.GetContextKeyString(c, constant.ContextKeyAutoGroup)
+	}
+	ObserveChannelRuntimeResult(group, info.OriginModelName, info.ChannelId, responseFRT(info), err.StatusCode, false)
+	if !penalize {
+		return
 	}
 	seconds := common.GetEnvOrDefault("RESPONSES_RECOVERY_COOLDOWN_SECONDS", 30)
 	if seconds < 1 {
@@ -143,4 +150,11 @@ func HandleResponsesRecoveryFailure(c *gin.Context, info *relaycommon.RelayInfo,
 	// The route cooldown is a temporary affinity tombstone. Do not GET/DELETE
 	// the binding: that races with another request's successful replacement.
 	// Failed requests cannot refresh it; a successful fallback replaces it.
+}
+
+func responseFRT(info *relaycommon.RelayInfo) time.Duration {
+	if info == nil || !info.HasSendResponse() {
+		return 0
+	}
+	return info.FirstResponseTime.Sub(info.StartTime)
 }

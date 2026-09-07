@@ -44,6 +44,14 @@ export default function SettingsMonitoring(props) {
       '100-199,300-399,401-407,409-499,500-503,505-523,525-599',
     'monitor_setting.auto_test_channel_enabled': false,
     'monitor_setting.auto_test_channel_minutes': 10,
+    'monitor_setting.dynamic_channel_weight_enabled': false,
+    'monitor_setting.dynamic_channel_weight_window_minutes': 15,
+    'monitor_setting.dynamic_channel_weight_min_samples': 20,
+    'monitor_setting.dynamic_channel_weight_target_frt_ms': 8000,
+    'monitor_setting.dynamic_channel_weight_error_penalty': 1,
+    'monitor_setting.dynamic_channel_weight_429_penalty': 1.5,
+    'monitor_setting.dynamic_channel_weight_min_multiplier': 0.25,
+    'monitor_setting.dynamic_channel_weight_max_multiplier': 2,
   });
   const refForm = useRef();
   const [inputsRow, setInputsRow] = useState(inputs);
@@ -160,6 +168,141 @@ export default function SettingsMonitoring(props) {
                       ...inputs,
                       'monitor_setting.auto_test_channel_minutes':
                         parseInt(value),
+                    })
+                  }
+                />
+              </Col>
+            </Row>
+            <Row gutter={16}>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.Switch
+                  field={'monitor_setting.dynamic_channel_weight_enabled'}
+                  label={t('启用动态渠道权重')}
+                  size='default'
+                  checkedText='｜'
+                  uncheckedText='〇'
+                  onChange={(value) =>
+                    setInputs({
+                      ...inputs,
+                      'monitor_setting.dynamic_channel_weight_enabled': value,
+                    })
+                  }
+                />
+              </Col>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.InputNumber
+                  label={t('动态权重统计窗口')}
+                  step={1}
+                  min={1}
+                  suffix={t('分钟')}
+                  extraText={t('按最近真实请求的首 token 和成功结果计算')}
+                  field={'monitor_setting.dynamic_channel_weight_window_minutes'}
+                  onChange={(value) =>
+                    setInputs({
+                      ...inputs,
+                      'monitor_setting.dynamic_channel_weight_window_minutes': parseInt(value),
+                    })
+                  }
+                />
+              </Col>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.InputNumber
+                  label={t('动态权重最少样本数')}
+                  step={1}
+                  min={1}
+                  suffix={t('条')}
+                  extraText={t('样本不足时保持人工配置权重')}
+                  field={'monitor_setting.dynamic_channel_weight_min_samples'}
+                  onChange={(value) =>
+                    setInputs({
+                      ...inputs,
+                      'monitor_setting.dynamic_channel_weight_min_samples': parseInt(value),
+                    })
+                  }
+                />
+              </Col>
+            </Row>
+            <Row gutter={16}>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.InputNumber
+                  label={t('目标首 token 时长')}
+                  step={500}
+                  min={100}
+                  suffix={t('毫秒')}
+                  extraText={t('低于目标会适度增权，高于目标会降权')}
+                  field={'monitor_setting.dynamic_channel_weight_target_frt_ms'}
+                  onChange={(value) =>
+                    setInputs({
+                      ...inputs,
+                      'monitor_setting.dynamic_channel_weight_target_frt_ms': parseInt(value),
+                    })
+                  }
+                />
+              </Col>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.InputNumber
+                  label={t('5xx 失败惩罚')}
+                  step={0.1}
+                  min={0}
+                  max={10}
+                  extraText={t('数值越高，近期 5xx 对权重影响越大')}
+                  field={'monitor_setting.dynamic_channel_weight_error_penalty'}
+                  onChange={(value) =>
+                    setInputs({
+                      ...inputs,
+                      'monitor_setting.dynamic_channel_weight_error_penalty': Number(value),
+                    })
+                  }
+                />
+              </Col>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.InputNumber
+                  label={t('429 额外惩罚')}
+                  step={0.1}
+                  min={0}
+                  max={10}
+                  extraText={t('数值越高，限流渠道会更快降权')}
+                  field={'monitor_setting.dynamic_channel_weight_429_penalty'}
+                  onChange={(value) =>
+                    setInputs({
+                      ...inputs,
+                      'monitor_setting.dynamic_channel_weight_429_penalty': Number(value),
+                    })
+                  }
+                />
+              </Col>
+            </Row>
+            <Row gutter={16}>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.InputNumber
+                  label={t('动态权重下限')}
+                  step={0.05}
+                  min={0.05}
+                  max={10}
+                  suffix={'x'}
+                  extraText={t('建议 0.25，避免异常渠道完全失去流量')}
+                  field={'monitor_setting.dynamic_channel_weight_min_multiplier'}
+                  onChange={(value) =>
+                    setInputs({
+                      ...inputs,
+                      'monitor_setting.dynamic_channel_weight_min_multiplier': Number(value),
+                    })
+                  }
+                />
+              </Col>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.InputNumber
+                  label={t('动态权重上限')}
+                  step={0.05}
+                  min={0.05}
+                  max={10}
+                  suffix={'x'}
+                  extraText={t('建议 2，避免健康渠道吃满全部流量')}
+                  field={'monitor_setting.dynamic_channel_weight_max_multiplier'}
+                  onChange={(value) =>
+                    setInputs({
+                      ...inputs,
+                      'monitor_setting.dynamic_channel_weight_max_multiplier': Number(value),
                     })
                   }
                 />
