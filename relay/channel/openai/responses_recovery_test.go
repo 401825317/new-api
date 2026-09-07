@@ -56,6 +56,8 @@ func TestResponsesRecoveryEvents(t *testing.T) {
 		{"missing_response", "data: {\"type\":\"response.completed\"}\n\n", 502, false, true, 0},
 		{"wrong_terminal_status", "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"in_progress\"}}\n\n", 502, false, true, 0},
 		{"success", recoveryCreated + recoveryDelta + recoveryCompleted, 0, true, false, 12},
+		{"completed_without_usage_before_output", "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":null}}\n\n", 502, false, true, 0},
+		{"completed_without_usage_after_reasoning", recoveryReasoningDelta + "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":null}}\n\n", 502, true, true, 0},
 		{"output_error", recoveryCreated + recoveryDelta + recoveryOverload, 503, true, true, 0},
 		{"reasoning_output_error", recoveryCreated + recoveryStructuralMetadata + recoveryReasoningDelta + recoveryOverload, 503, true, true, 0},
 		{"output_eof", recoveryDelta, 502, true, true, 0},
@@ -82,7 +84,9 @@ func TestResponsesRecoveryEvents(t *testing.T) {
 					require.Nil(t, err)
 					require.True(t, types.IsSkipRetryError(info.ResponsesRecovery.Error), "committed stream errors must never be replayed")
 					require.True(t, strings.Contains(w.Body.String(), "event: error") || strings.Contains(w.Body.String(), "event: response.failed"))
-					require.NotContains(t, w.Body.String(), "response.completed")
+					if tt.name != "completed_without_usage_after_reasoning" {
+						require.NotContains(t, w.Body.String(), "response.completed")
+					}
 				} else {
 					require.NotNil(t, err)
 					require.Empty(t, w.Body.String())

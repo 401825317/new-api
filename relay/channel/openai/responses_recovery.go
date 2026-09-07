@@ -425,6 +425,9 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 			if terminal && (event.Response == nil || gjson.Get(f.data, "response.status").String() != "completed") {
 				return fail(types.NewOpenAIError(fmt.Errorf("invalid Responses terminal status"), types.ErrorCodeBadResponse, 502), "responses_invalid_event", true, nil)
 			}
+			if terminal && usage.TotalTokens <= 0 && outputText.Len() == 0 {
+				return fail(types.NewOpenAIError(fmt.Errorf("upstream Responses completed without usage information"), types.ErrorCodeBadResponse, 502), "responses_missing_usage", true, nil)
+			}
 			isPreamble := responsesStructuralPreamble(f.data, event.Type, usage) || (!terminal && !responsesEventHasConsumableOutput(f.data, usage))
 			prospectiveFrames := len(pending) + 1
 			prospectiveBytes := pendingBytes + len(f.data)
