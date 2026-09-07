@@ -58,6 +58,7 @@ func TestResponsesRecoveryEvents(t *testing.T) {
 		{"success", recoveryCreated + recoveryDelta + recoveryCompleted, 0, true, false, 12},
 		{"completed_without_usage_before_output", "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":null}}\n\n", 502, false, true, 0},
 		{"completed_without_usage_after_reasoning", recoveryReasoningDelta + "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":null}}\n\n", 502, true, true, 0},
+		{"eof_without_terminal_and_without_usage", recoveryCreated + "data: {\"type\":\"response.in_progress\",\"response\":{\"status\":\"in_progress\",\"output\":[]}}\n\n", 502, false, true, 0},
 		{"output_error", recoveryCreated + recoveryDelta + recoveryOverload, 503, true, true, 0},
 		{"reasoning_output_error", recoveryCreated + recoveryStructuralMetadata + recoveryReasoningDelta + recoveryOverload, 503, true, true, 0},
 		{"output_eof", recoveryDelta, 502, true, true, 0},
