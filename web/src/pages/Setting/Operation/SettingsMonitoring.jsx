@@ -30,29 +30,31 @@ import {
 import { useTranslation } from 'react-i18next';
 import HttpStatusCodeRulesInput from '../../../components/settings/HttpStatusCodeRulesInput';
 
+const defaultMonitoringInputs = {
+  ChannelDisableThreshold: '',
+  QuotaRemindThreshold: '',
+  AutomaticDisableChannelEnabled: false,
+  AutomaticEnableChannelEnabled: false,
+  AutomaticDisableKeywords: '',
+  AutomaticDisableStatusCodes: '401',
+  AutomaticRetryStatusCodes:
+    '100-199,300-399,401-407,409-499,500-503,505-523,525-599',
+  'monitor_setting.auto_test_channel_enabled': false,
+  'monitor_setting.auto_test_channel_minutes': 10,
+  'monitor_setting.dynamic_channel_weight_enabled': false,
+  'monitor_setting.dynamic_channel_weight_window_minutes': 15,
+  'monitor_setting.dynamic_channel_weight_min_samples': 20,
+  'monitor_setting.dynamic_channel_weight_target_frt_ms': 8000,
+  'monitor_setting.dynamic_channel_weight_error_penalty': 1,
+  'monitor_setting.dynamic_channel_weight_429_penalty': 1.5,
+  'monitor_setting.dynamic_channel_weight_min_multiplier': 0.25,
+  'monitor_setting.dynamic_channel_weight_max_multiplier': 2,
+};
+
 export default function SettingsMonitoring(props) {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
-  const [inputs, setInputs] = useState({
-    ChannelDisableThreshold: '',
-    QuotaRemindThreshold: '',
-    AutomaticDisableChannelEnabled: false,
-    AutomaticEnableChannelEnabled: false,
-    AutomaticDisableKeywords: '',
-    AutomaticDisableStatusCodes: '401',
-    AutomaticRetryStatusCodes:
-      '100-199,300-399,401-407,409-499,500-503,505-523,525-599',
-    'monitor_setting.auto_test_channel_enabled': false,
-    'monitor_setting.auto_test_channel_minutes': 10,
-    'monitor_setting.dynamic_channel_weight_enabled': false,
-    'monitor_setting.dynamic_channel_weight_window_minutes': 15,
-    'monitor_setting.dynamic_channel_weight_min_samples': 20,
-    'monitor_setting.dynamic_channel_weight_target_frt_ms': 8000,
-    'monitor_setting.dynamic_channel_weight_error_penalty': 1,
-    'monitor_setting.dynamic_channel_weight_429_penalty': 1.5,
-    'monitor_setting.dynamic_channel_weight_min_multiplier': 0.25,
-    'monitor_setting.dynamic_channel_weight_max_multiplier': 2,
-  });
+  const [inputs, setInputs] = useState(defaultMonitoringInputs);
   const refForm = useRef();
   const [inputsRow, setInputsRow] = useState(inputs);
   const parsedAutoDisableStatusCodes = parseHttpStatusCodeRules(
@@ -63,7 +65,7 @@ export default function SettingsMonitoring(props) {
   );
 
   function onSubmit() {
-    const updateArray = compareObjects(inputs, inputsRow);
+    const updateArray = compareObjects(inputsRow, inputs);
     if (!updateArray.length) return showWarning(t('你似乎并没有修改什么'));
     if (!parsedAutoDisableStatusCodes.ok) {
       const details =
@@ -118,7 +120,10 @@ export default function SettingsMonitoring(props) {
   }
 
   useEffect(() => {
-    const currentInputs = {};
+    // Keep defaults for keys that predate this setting page or have not yet
+    // been persisted. Otherwise newly entered fields are invisible to the
+    // change detector and the page reports that nothing was modified.
+    const currentInputs = { ...defaultMonitoringInputs };
     for (let key in props.options) {
       if (Object.keys(inputs).includes(key)) {
         currentInputs[key] = props.options[key];
