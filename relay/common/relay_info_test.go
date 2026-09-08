@@ -2,6 +2,7 @@ package common
 
 import (
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/types"
 	"github.com/stretchr/testify/require"
@@ -37,4 +38,16 @@ func TestRelayInfoGetFinalRequestRelayFormatFallsBackToRelayFormat(t *testing.T)
 func TestRelayInfoGetFinalRequestRelayFormatNilReceiver(t *testing.T) {
 	var info *RelayInfo
 	require.Equal(t, types.RelayFormat(""), info.GetFinalRequestRelayFormat())
+}
+
+func TestChannelAttemptFRTExcludesPreviousAttemptLatency(t *testing.T) {
+	now := time.Now()
+	info := &RelayInfo{
+		StartTime:                       now.Add(-12 * time.Second),
+		FirstResponseTime:               now,
+		ChannelAttemptStartTime:         now.Add(-2 * time.Second),
+		ChannelAttemptFirstResponseTime: now,
+	}
+
+	require.Equal(t, 2*time.Second, info.ChannelAttemptFRT())
 }

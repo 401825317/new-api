@@ -94,7 +94,12 @@ type RelayInfo struct {
 	TokenUnlimited    bool
 	StartTime         time.Time
 	FirstResponseTime time.Time
-	isFirstResponse   bool
+	// ChannelAttempt timing is reset for every upstream try. It keeps a
+	// successful fallback from inheriting latency spent waiting on failed
+	// channels while StartTime/FirstResponseTime retain client-visible timing.
+	ChannelAttemptStartTime         time.Time
+	ChannelAttemptFirstResponseTime time.Time
+	isFirstResponse                 bool
 	//SendLastReasoningResponse bool
 	IsStream               bool
 	IsGeminiBatchEmbedding bool
@@ -649,10 +654,34 @@ func (info *RelayInfo) GetEstimatePromptTokens() int {
 }
 
 func (info *RelayInfo) SetFirstResponseTime() {
+	now := time.Now()
+	if info.ChannelAttemptFirstResponseTime.IsZero() {
+		info.ChannelAttemptFirstResponseTime = now
+	}
 	if info.isFirstResponse {
-		info.FirstResponseTime = time.Now()
+		info.FirstResponseTime = now
 		info.isFirstResponse = false
 	}
+}
+
+// BeginChannelAttempt starts the provider-facing timer for one selected
+// channel without changing the end-to-end timing exposed in usage logs.
+func (info *RelayInfo) BeginChannelAttempt() {
+	info.ChannelAttemptStartTime = time.Now()
+	info.ChannelAttemptFirstResponseTime = time.Time{}
+}
+
+// ChannelAttemptFRT returns the current channel's first-response latency.
+// Older call paths that do not start an attempt explicitly fall back to the
+// request-level timing for compatibility.
+func (info *RelayInfo) ChannelAttemptFRT() time.Duration {
+	if !info.ChannelAttemptStartTime.IsZero() && info.ChannelAttemptFirstResponseTime.After(info.ChannelAttemptStartTime) {
+		return info.ChannelAttemptFirstResponseTime.Sub(info.ChannelAttemptStartTime)
+	}
+	if info.FirstResponseTime.After(info.StartTime) {
+		return info.FirstResponseTime.Sub(info.StartTime)
+	}
+	return 0
 }
 
 func (info *RelayInfo) HasSendResponse() bool {

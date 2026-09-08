@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -68,4 +69,70 @@ func TestResponsesRecoveryChannelSupported(t *testing.T) {
 			require.Equal(t, tc.want, ResponsesRecoveryChannelSupported(channel))
 		})
 	}
+}
+
+func TestNonTransientFailureDoesNotPoisonDynamicWeight(t *testing.T) {
+	resetChannelRuntimeScores()
+	oldRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	setting := operation_setting.GetMonitorSetting()
+	original := *setting
+	t.Cleanup(func() {
+		*setting = original
+		common.RedisEnabled = oldRedis
+		resetChannelRuntimeScores()
+	})
+	setting.DynamicChannelWeightEnabled = true
+	setting.DynamicChannelWeightMinSamples = 1
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "g")
+	info := &relaycommon.RelayInfo{OriginModelName: "m", ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 73}}
+	badRequest := types.NewOpenAIError(fmt.Errorf("bad request"), types.ErrorCodeBadResponse, 400)
+	HandleResponsesRecoveryFailure(c, info, badRequest)
+
+	weight := uint(100)
+	score := CalculateChannelRuntimeScore(&model.Channel{Id: 73, Weight: &weight}, "g", "m")
+	require.Zero(t, score.SampleCount)
+	require.False(t, score.Ready)
+
+	serverError := types.NewOpenAIError(fmt.Errorf("overloaded"), types.ErrorCodeBadResponse, 503)
+	HandleResponsesRecoveryFailure(c, info, serverError)
+	score = CalculateChannelRuntimeScore(&model.Channel{Id: 73, Weight: &weight}, "g", "m")
+	require.Equal(t, 1, score.SampleCount)
+	require.True(t, score.Ready)
+	require.Equal(t, 1.0, score.Rate5xx)
+}
+
+func TestDynamicSelectionStoresExactAudit(t *testing.T) {
+	resetChannelRuntimeScores()
+	oldRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	setting := operation_setting.GetMonitorSetting()
+	original := *setting
+	t.Cleanup(func() {
+		*setting = original
+		common.RedisEnabled = oldRedis
+		resetChannelRuntimeScores()
+	})
+	setting.DynamicChannelWeightEnabled = true
+	setting.DynamicChannelWeightMinSamples = 10
+
+	one := uint(100)
+	two := uint(50)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	selected := selectByDynamicWeight(c, "g", "m", 0, 1, "standard", []*model.Channel{
+		{Id: 81, Weight: &one},
+		{Id: 82, Weight: &two},
+	})
+	require.NotNil(t, selected)
+	value, found := c.Get(dynamicChannelWeightAuditContextKey)
+	require.True(t, found)
+	audits, ok := value.([]DynamicChannelWeightAudit)
+	require.True(t, ok)
+	require.Len(t, audits, 1)
+	require.Equal(t, selected.Id, audits[0].SelectedChannelID)
+	require.Len(t, audits[0].Candidates, 2)
+	require.InDelta(t, float64(selected.GetWeight())/150.0, audits[0].SelectedProbability, 0.0001)
 }

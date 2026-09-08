@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/cachex"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -56,7 +57,7 @@ func ResponsesRouteCooling(group, modelName string, id int) bool {
 func selectResponsesRecoveryChannel(c *gin.Context, group, modelName string, retry int) (*model.Channel, error) {
 	if !ResponsesRecoveryEnabled(c) {
 		if operation_setting.GetMonitorSetting().DynamicChannelWeightEnabled {
-			return selectDynamicChannel(group, modelName, retry)
+			return selectDynamicChannel(c, group, modelName, retry)
 		}
 		return model.GetRandomSatisfiedChannel(group, modelName, retry)
 	}
@@ -90,11 +91,11 @@ func selectResponsesRecoveryChannel(c *gin.Context, group, modelName string, ret
 		return nil, nil
 	}
 	c.Set("responses_recovery_exhausted", false)
+	if operation_setting.GetMonitorSetting().DynamicChannelWeightEnabled {
+		return selectByDynamicWeight(c, group, modelName, retry, priority, "recovery", eligible), nil
+	}
 	weight := 0
 	weightOf := func(ch *model.Channel) int {
-		if operation_setting.GetMonitorSetting().DynamicChannelWeightEnabled {
-			return EffectiveChannelWeight(ch, group, modelName)
-		}
 		if !common.MemoryCacheEnabled {
 			return ch.GetWeight() + 10
 		}
@@ -121,7 +122,7 @@ func selectResponsesRecoveryChannel(c *gin.Context, group, modelName string, ret
 // authoritative; dynamic health only changes probability within the selected
 // tier so a degraded channel cannot silently outrank an explicitly preferred
 // tier.
-func selectDynamicChannel(group, modelName string, retry int) (*model.Channel, error) {
+func selectDynamicChannel(c *gin.Context, group, modelName string, retry int) (*model.Channel, error) {
 	candidates, err := model.RecoveryCandidates(group, modelName)
 	if err != nil || len(candidates) == 0 {
 		return nil, err
@@ -144,34 +145,100 @@ func selectDynamicChannel(group, modelName string, retry int) (*model.Channel, e
 	}
 	targetPriority := sortedPriorities[retry]
 	eligible := make([]*model.Channel, 0, len(candidates))
-	weights := make(map[int]int, len(candidates))
-	total := 0
 	for _, ch := range candidates {
 		if ch.GetPriority() != targetPriority {
 			continue
 		}
-		weight := EffectiveChannelWeight(ch, group, modelName)
-		if weight < 1 {
-			weight = 1
-		}
 		eligible = append(eligible, ch)
-		weights[ch.Id] = weight
-		total += weight
 	}
 	if len(eligible) == 0 {
 		return nil, nil
 	}
-	if total <= 0 {
-		return eligible[common.GetRandomInt(len(eligible))], nil
+	return selectByDynamicWeight(c, group, modelName, retry, targetPriority, "standard", eligible), nil
+}
+
+const dynamicChannelWeightAuditContextKey = "dynamic_channel_weight_audit"
+
+// DynamicChannelWeightAudit records the exact candidate weights used by one
+// selection. It is attached only to administrator-visible log metadata.
+type DynamicChannelWeightAudit struct {
+	Group               string                `json:"group"`
+	Model               string                `json:"model"`
+	Mode                string                `json:"mode"`
+	Retry               int                   `json:"retry"`
+	Priority            int64                 `json:"priority"`
+	SelectedChannelID   int                   `json:"selected_channel_id"`
+	SelectedProbability float64               `json:"selected_probability"`
+	Candidates          []ChannelRuntimeScore `json:"candidates"`
+}
+
+func selectByDynamicWeight(c *gin.Context, group, modelName string, retry int, priority int64, mode string, eligible []*model.Channel) *model.Channel {
+	if len(eligible) == 0 {
+		return nil
+	}
+	scores := make([]ChannelRuntimeScore, 0, len(eligible))
+	total := 0
+	for _, ch := range eligible {
+		score := CalculateChannelRuntimeScore(ch, group, modelName)
+		if score.EffectiveWeight > 0 {
+			total += score.EffectiveWeight
+		}
+		scores = append(scores, score)
+	}
+	if total == 0 {
+		// Preserve New API's equal-probability behavior when every configured
+		// weight is zero, and expose the actual selection weights in the audit.
+		for i := range scores {
+			scores[i].EffectiveWeight = 100
+			scores[i].Multiplier = 1
+		}
+		total = len(scores) * 100
 	}
 	n := common.GetRandomInt(total)
-	for _, ch := range eligible {
-		n -= weights[ch.Id]
+	selectedIndex := len(eligible) - 1
+	for i := range eligible {
+		n -= scores[i].EffectiveWeight
 		if n < 0 {
-			return ch, nil
+			selectedIndex = i
+			break
 		}
 	}
-	return eligible[len(eligible)-1], nil
+	selected := eligible[selectedIndex]
+	audit := DynamicChannelWeightAudit{
+		Group:               group,
+		Model:               modelName,
+		Mode:                mode,
+		Retry:               retry,
+		Priority:            priority,
+		SelectedChannelID:   selected.Id,
+		SelectedProbability: float64(scores[selectedIndex].EffectiveWeight) / float64(total),
+		Candidates:          scores,
+	}
+	if c != nil {
+		audits, _ := c.Get(dynamicChannelWeightAuditContextKey)
+		selectionAudits, _ := audits.([]DynamicChannelWeightAudit)
+		if len(selectionAudits) < 16 {
+			selectionAudits = append(selectionAudits, audit)
+			c.Set(dynamicChannelWeightAuditContextKey, selectionAudits)
+		}
+		selectedScore := scores[selectedIndex]
+		logger.LogInfo(c, fmt.Sprintf("dynamic channel weight selected: mode=%s group=%s model=%s retry=%d priority=%d channel=%d base=%d effective=%d multiplier=%.4f probability=%.4f samples=%d/%d median_frt_ms=%d success_rate=%.4f rate_429=%.4f rate_5xx=%.4f source=%s",
+			mode, group, modelName, retry, priority, selected.Id, selectedScore.BaseWeight, selectedScore.EffectiveWeight,
+			selectedScore.Multiplier, audit.SelectedProbability, selectedScore.SampleCount, selectedScore.MinSamples,
+			selectedScore.MedianFRTMs, selectedScore.SuccessRate, selectedScore.Rate429, selectedScore.Rate5xx, selectedScore.Source))
+	}
+	return selected
+}
+
+// AppendDynamicChannelWeightAdminInfo adds all decisions made for the current
+// request to usage/error logs without exposing them to non-admin clients.
+func AppendDynamicChannelWeightAdminInfo(c *gin.Context, adminInfo map[string]interface{}) {
+	if c == nil || adminInfo == nil {
+		return
+	}
+	if audits, ok := c.Get(dynamicChannelWeightAuditContextKey); ok {
+		adminInfo["dynamic_channel_weight"] = audits
+	}
 }
 
 // ResponsesRecoveryChannelSupported gates recovery to adaptors that can
@@ -198,7 +265,7 @@ func ResponsesRecoveryChannelSupported(ch *model.Channel) bool {
 // Only transient upstream failures penalize the route; invalid inputs and client
 // cancellation must not poison channel health. Never globally purge affinity.
 func HandleResponsesRecoveryFailure(c *gin.Context, info *relaycommon.RelayInfo, err *types.NewAPIError) {
-	if !ResponsesRecoveryEnabled(c) || c.Request.Context().Err() != nil {
+	if c == nil || c.Request == nil || c.Request.Context().Err() != nil {
 		return
 	}
 	if info == nil {
@@ -214,12 +281,17 @@ func HandleResponsesRecoveryFailure(c *gin.Context, info *relaycommon.RelayInfo,
 	if err == nil {
 		return
 	}
-	c.Set("responses_recovery_failed", true)
 	group := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 	if group == "auto" {
 		group = common.GetContextKeyString(c, constant.ContextKeyAutoGroup)
 	}
-	ObserveChannelRuntimeResult(group, info.OriginModelName, info.ChannelId, responseFRT(info), err.StatusCode, false)
+	if penalize && !info.IsChannelTest {
+		ObserveChannelRuntimeResult(group, info.OriginModelName, info.ChannelId, responseFRT(info), err.StatusCode, false)
+	}
+	if !ResponsesRecoveryEnabled(c) {
+		return
+	}
+	c.Set("responses_recovery_failed", true)
 	if !penalize {
 		return
 	}
@@ -239,8 +311,8 @@ func HandleResponsesRecoveryFailure(c *gin.Context, info *relaycommon.RelayInfo,
 }
 
 func responseFRT(info *relaycommon.RelayInfo) time.Duration {
-	if info == nil || !info.HasSendResponse() {
+	if info == nil {
 		return 0
 	}
-	return info.FirstResponseTime.Sub(info.StartTime)
+	return info.ChannelAttemptFRT()
 }

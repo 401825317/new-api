@@ -26,6 +26,7 @@ import {
   showSuccess,
   showWarning,
   parseHttpStatusCodeRules,
+  toBoolean,
 } from '../../../helpers';
 import { useTranslation } from 'react-i18next';
 import HttpStatusCodeRulesInput from '../../../components/settings/HttpStatusCodeRulesInput';
@@ -50,6 +51,42 @@ const defaultMonitoringInputs = {
   'monitor_setting.dynamic_channel_weight_min_multiplier': 0.25,
   'monitor_setting.dynamic_channel_weight_max_multiplier': 2,
 };
+
+const numericMonitoringKeys = new Set([
+  'ChannelDisableThreshold',
+  'QuotaRemindThreshold',
+  'monitor_setting.auto_test_channel_minutes',
+  'monitor_setting.dynamic_channel_weight_window_minutes',
+  'monitor_setting.dynamic_channel_weight_min_samples',
+  'monitor_setting.dynamic_channel_weight_target_frt_ms',
+  'monitor_setting.dynamic_channel_weight_error_penalty',
+  'monitor_setting.dynamic_channel_weight_429_penalty',
+  'monitor_setting.dynamic_channel_weight_min_multiplier',
+  'monitor_setting.dynamic_channel_weight_max_multiplier',
+]);
+
+const booleanMonitoringKeys = new Set([
+  'AutomaticDisableChannelEnabled',
+  'AutomaticEnableChannelEnabled',
+  'monitor_setting.auto_test_channel_enabled',
+  'monitor_setting.dynamic_channel_weight_enabled',
+]);
+
+function normalizeMonitoringValue(key, value) {
+  if (booleanMonitoringKeys.has(key)) return toBoolean(value);
+  if (numericMonitoringKeys.has(key)) {
+    if (value === '' || value === null || value === undefined) return '';
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue : '';
+  }
+  return value === null || value === undefined ? '' : String(value);
+}
+
+function parseMonitoringNumber(value) {
+  if (value === '' || value === null || value === undefined) return '';
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : '';
+}
 
 export default function SettingsMonitoring(props) {
   const { t } = useTranslation();
@@ -83,6 +120,27 @@ export default function SettingsMonitoring(props) {
           : '';
       return showError(`${t('自动重试状态码格式不正确')}${details}`);
     }
+    const invalidNumericKey = updateArray.find(
+      (item) =>
+        numericMonitoringKeys.has(item.key) &&
+        (inputs[item.key] === '' || !Number.isFinite(Number(inputs[item.key]))),
+    );
+    if (invalidNumericKey) {
+      return showError(t('动态权重参数必须是有效数字'));
+    }
+    const minMultiplier = Number(
+      inputs['monitor_setting.dynamic_channel_weight_min_multiplier'],
+    );
+    const maxMultiplier = Number(
+      inputs['monitor_setting.dynamic_channel_weight_max_multiplier'],
+    );
+    if (
+      Number.isFinite(minMultiplier) &&
+      Number.isFinite(maxMultiplier) &&
+      minMultiplier > maxMultiplier
+    ) {
+      return showError(t('动态权重下限不能大于上限'));
+    }
     const requestQueue = updateArray.map((item) => {
       let value = '';
       if (typeof inputs[item.key] === 'boolean') {
@@ -92,7 +150,9 @@ export default function SettingsMonitoring(props) {
           AutomaticDisableStatusCodes: parsedAutoDisableStatusCodes.normalized,
           AutomaticRetryStatusCodes: parsedAutoRetryStatusCodes.normalized,
         };
-        value = normalizedMap[item.key] ?? inputs[item.key];
+        value =
+          normalizedMap[item.key] ??
+          normalizeMonitoringValue(item.key, inputs[item.key]);
       }
       return API.put('/api/option/', {
         key: item.key,
@@ -102,11 +162,14 @@ export default function SettingsMonitoring(props) {
     setLoading(true);
     Promise.all(requestQueue)
       .then((res) => {
-        if (requestQueue.length === 1) {
-          if (res.includes(undefined)) return;
-        } else if (requestQueue.length > 1) {
-          if (res.includes(undefined))
-            return showError(t('部分保存失败，请重试'));
+        const failedResponse = res.find((response) => !response?.data?.success);
+        if (failedResponse) {
+          return showError(
+            failedResponse.data?.message ||
+              (res.length > 1
+                ? t('部分保存失败，请重试')
+                : t('保存失败，请重试')),
+          );
         }
         showSuccess(t('保存成功'));
         props.refresh();
@@ -125,13 +188,13 @@ export default function SettingsMonitoring(props) {
     // change detector and the page reports that nothing was modified.
     const currentInputs = { ...defaultMonitoringInputs };
     for (let key in props.options) {
-      if (Object.keys(inputs).includes(key)) {
-        currentInputs[key] = props.options[key];
+      if (Object.prototype.hasOwnProperty.call(defaultMonitoringInputs, key)) {
+        currentInputs[key] = normalizeMonitoringValue(key, props.options[key]);
       }
     }
     setInputs(currentInputs);
     setInputsRow(structuredClone(currentInputs));
-    refForm.current.setValues(currentInputs);
+    refForm.current?.setValues(currentInputs);
   }, [props.options]);
 
   return (
@@ -172,7 +235,7 @@ export default function SettingsMonitoring(props) {
                     setInputs({
                       ...inputs,
                       'monitor_setting.auto_test_channel_minutes':
-                        parseInt(value),
+                        parseMonitoringNumber(value),
                     })
                   }
                 />
@@ -201,11 +264,14 @@ export default function SettingsMonitoring(props) {
                   min={1}
                   suffix={t('分钟')}
                   extraText={t('按最近真实请求的首 token 和成功结果计算')}
-                  field={'monitor_setting.dynamic_channel_weight_window_minutes'}
+                  field={
+                    'monitor_setting.dynamic_channel_weight_window_minutes'
+                  }
                   onChange={(value) =>
                     setInputs({
                       ...inputs,
-                      'monitor_setting.dynamic_channel_weight_window_minutes': parseInt(value),
+                      'monitor_setting.dynamic_channel_weight_window_minutes':
+                        parseMonitoringNumber(value),
                     })
                   }
                 />
@@ -221,7 +287,8 @@ export default function SettingsMonitoring(props) {
                   onChange={(value) =>
                     setInputs({
                       ...inputs,
-                      'monitor_setting.dynamic_channel_weight_min_samples': parseInt(value),
+                      'monitor_setting.dynamic_channel_weight_min_samples':
+                        parseMonitoringNumber(value),
                     })
                   }
                 />
@@ -239,7 +306,8 @@ export default function SettingsMonitoring(props) {
                   onChange={(value) =>
                     setInputs({
                       ...inputs,
-                      'monitor_setting.dynamic_channel_weight_target_frt_ms': parseInt(value),
+                      'monitor_setting.dynamic_channel_weight_target_frt_ms':
+                        parseMonitoringNumber(value),
                     })
                   }
                 />
@@ -255,7 +323,8 @@ export default function SettingsMonitoring(props) {
                   onChange={(value) =>
                     setInputs({
                       ...inputs,
-                      'monitor_setting.dynamic_channel_weight_error_penalty': Number(value),
+                      'monitor_setting.dynamic_channel_weight_error_penalty':
+                        parseMonitoringNumber(value),
                     })
                   }
                 />
@@ -271,7 +340,8 @@ export default function SettingsMonitoring(props) {
                   onChange={(value) =>
                     setInputs({
                       ...inputs,
-                      'monitor_setting.dynamic_channel_weight_429_penalty': Number(value),
+                      'monitor_setting.dynamic_channel_weight_429_penalty':
+                        parseMonitoringNumber(value),
                     })
                   }
                 />
@@ -286,11 +356,14 @@ export default function SettingsMonitoring(props) {
                   max={10}
                   suffix={'x'}
                   extraText={t('建议 0.25，避免异常渠道完全失去流量')}
-                  field={'monitor_setting.dynamic_channel_weight_min_multiplier'}
+                  field={
+                    'monitor_setting.dynamic_channel_weight_min_multiplier'
+                  }
                   onChange={(value) =>
                     setInputs({
                       ...inputs,
-                      'monitor_setting.dynamic_channel_weight_min_multiplier': Number(value),
+                      'monitor_setting.dynamic_channel_weight_min_multiplier':
+                        parseMonitoringNumber(value),
                     })
                   }
                 />
@@ -303,11 +376,14 @@ export default function SettingsMonitoring(props) {
                   max={10}
                   suffix={'x'}
                   extraText={t('建议 2，避免健康渠道吃满全部流量')}
-                  field={'monitor_setting.dynamic_channel_weight_max_multiplier'}
+                  field={
+                    'monitor_setting.dynamic_channel_weight_max_multiplier'
+                  }
                   onChange={(value) =>
                     setInputs({
                       ...inputs,
-                      'monitor_setting.dynamic_channel_weight_max_multiplier': Number(value),
+                      'monitor_setting.dynamic_channel_weight_max_multiplier':
+                        parseMonitoringNumber(value),
                     })
                   }
                 />

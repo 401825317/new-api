@@ -3,7 +3,6 @@ package service
 import (
 	"encoding/base64"
 	"strings"
-	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -47,9 +46,9 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	other["user_group_ratio"] = userGroupRatio
 	other["frt"] = float64(relayInfo.FirstResponseTime.UnixMilli() - relayInfo.StartTime.UnixMilli())
 	streamSucceeded := relayInfo.StreamStatus == nil || (relayInfo.StreamStatus.IsNormalEnd() && !relayInfo.StreamStatus.HasErrors())
-	if relayInfo.ChannelId > 0 && relayInfo.HasSendResponse() && streamSucceeded {
+	if relayInfo.ChannelId > 0 && relayInfo.HasSendResponse() && streamSucceeded && !relayInfo.IsChannelTest {
 		ObserveChannelRuntimeResult(relayInfo.UsingGroup, relayInfo.OriginModelName, relayInfo.ChannelId,
-			time.Duration(other["frt"].(float64))*time.Millisecond, 200, true)
+			relayInfo.ChannelAttemptFRT(), 200, true)
 	}
 	if relayInfo.ReasoningEffort != "" {
 		other["reasoning_effort"] = relayInfo.ReasoningEffort
@@ -66,10 +65,17 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 
 	adminInfo := make(map[string]interface{})
 	adminInfo["use_channel"] = ctx.GetStringSlice("use_channel")
+	if parentID := ctx.GetString(common.ParentRequestIdKey); parentID != "" {
+		adminInfo["parent_request_id"] = parentID
+	}
+	if upstreamID := ctx.GetString(common.UpstreamRequestIdKey); upstreamID != "" {
+		adminInfo["upstream_request_id"] = upstreamID
+	}
 	if operation_setting.GetMonitorSetting().DynamicChannelWeightEnabled && relayInfo.ChannelId > 0 {
 		adminInfo["dynamic_channel_weight_enabled"] = true
 		adminInfo["dynamic_channel_weight_channel_id"] = relayInfo.ChannelId
 	}
+	AppendDynamicChannelWeightAdminInfo(ctx, adminInfo)
 	isMultiKey := common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey)
 	if isMultiKey {
 		adminInfo["is_multi_key"] = true

@@ -217,6 +217,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		c.Request.Body = io.NopCloser(bodyStorage)
 		relayInfo.ResponsesRecovery = nil
 		c.Set("responses_recovery_failed", false)
+		relayInfo.BeginChannelAttempt()
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -426,12 +427,19 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		other["channel_type"] = c.GetInt("channel_type")
 		adminInfo := make(map[string]interface{})
 		adminInfo["use_channel"] = c.GetStringSlice("use_channel")
+		if parentID := c.GetString(common.ParentRequestIdKey); parentID != "" {
+			adminInfo["parent_request_id"] = parentID
+		}
+		if upstreamID := c.GetString(common.UpstreamRequestIdKey); upstreamID != "" {
+			adminInfo["upstream_request_id"] = upstreamID
+		}
 		isMultiKey := common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey)
 		if isMultiKey {
 			adminInfo["is_multi_key"] = true
 			adminInfo["multi_key_index"] = common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
 		}
 		service.AppendChannelAffinityAdminInfo(c, adminInfo)
+		service.AppendDynamicChannelWeightAdminInfo(c, adminInfo)
 		other["admin_info"] = adminInfo
 		startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
 		if startTime.IsZero() {

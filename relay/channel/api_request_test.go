@@ -5,10 +5,33 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCorrelationHeadersAreGatewayOwnedAndUpstreamIDCaptured(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ctx.Set(common.ParentRequestIdKey, "cf-global-123")
+	ctx.Set(common.RequestIdKey, "new-api-456")
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/v1/responses", nil)
+	setCorrelationHeaders(req, ctx)
+	applyHeaderOverrideToRequest(req, map[string]string{
+		common.ParentRequestIdKey: "spoofed",
+		common.RequestIdKey:       "spoofed",
+	})
+	setCorrelationHeaders(req, ctx)
+	require.Equal(t, "cf-global-123", req.Header.Get(common.ParentRequestIdKey))
+	require.Equal(t, "new-api-456", req.Header.Get(common.RequestIdKey))
+
+	resp := &http.Response{Header: make(http.Header)}
+	resp.Header.Set("X-Request-Id", "provider-789")
+	captureUpstreamRequestID(resp, ctx)
+	require.Equal(t, "provider-789", ctx.GetString(common.UpstreamRequestIdKey))
+}
 
 func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {
 	t.Parallel()

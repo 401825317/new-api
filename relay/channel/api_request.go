@@ -287,6 +287,30 @@ func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]s
 	}
 }
 
+func setCorrelationHeaders(req *http.Request, c *gin.Context) {
+	if req == nil || c == nil {
+		return
+	}
+	if parentID := c.GetString(common2.ParentRequestIdKey); parentID != "" {
+		req.Header.Set(common2.ParentRequestIdKey, parentID)
+	}
+	if requestID := c.GetString(common2.RequestIdKey); requestID != "" {
+		req.Header.Set(common2.RequestIdKey, requestID)
+	}
+}
+
+func captureUpstreamRequestID(resp *http.Response, c *gin.Context) {
+	if resp == nil || c == nil {
+		return
+	}
+	for _, name := range []string{"X-Upstream-Request-Id", "X-Request-Id", "X-Request-ID"} {
+		if value := strings.TrimSpace(resp.Header.Get(name)); value != "" && len(value) <= 200 {
+			c.Set(common2.UpstreamRequestIdKey, value)
+			return
+		}
+	}
+}
+
 func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
@@ -300,6 +324,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
 	headers := req.Header
+	setCorrelationHeaders(req, c)
 	err = a.SetupRequestHeader(c, &headers, info)
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
@@ -311,10 +336,14 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
+	// Correlation headers are gateway-owned and cannot be replaced by a
+	// channel/user header override.
+	setCorrelationHeaders(req, c)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
+	captureUpstreamRequestID(resp, c)
 	return resp, nil
 }
 
@@ -333,6 +362,7 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	// set form data
 	req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 	headers := req.Header
+	setCorrelationHeaders(req, c)
 	err = a.SetupRequestHeader(c, &headers, info)
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
@@ -344,6 +374,7 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
+	setCorrelationHeaders(req, c)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
@@ -357,6 +388,12 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
 	targetHeader := http.Header{}
+	if parentID := c.GetString(common2.ParentRequestIdKey); parentID != "" {
+		targetHeader.Set(common2.ParentRequestIdKey, parentID)
+	}
+	if requestID := c.GetString(common2.RequestIdKey); requestID != "" {
+		targetHeader.Set(common2.RequestIdKey, requestID)
+	}
 	err = a.SetupRequestHeader(c, &targetHeader, info)
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
@@ -369,6 +406,12 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	}
 	for key, value := range headerOverride {
 		targetHeader.Set(key, value)
+	}
+	if parentID := c.GetString(common2.ParentRequestIdKey); parentID != "" {
+		targetHeader.Set(common2.ParentRequestIdKey, parentID)
+	}
+	if requestID := c.GetString(common2.RequestIdKey); requestID != "" {
+		targetHeader.Set(common2.RequestIdKey, requestID)
 	}
 	targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 	targetConn, _, err := websocket.DefaultDialer.Dial(fullRequestURL, targetHeader)

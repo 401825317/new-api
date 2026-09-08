@@ -94,6 +94,71 @@ function buildChannelAffinityTooltip(affinity, t) {
   );
 }
 
+function formatDynamicWeightPercent(value) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue)
+    ? `${(numberValue * 100).toFixed(1)}%`
+    : '-';
+}
+
+function selectedDynamicWeightScore(audit) {
+  if (!audit || !Array.isArray(audit.candidates)) return null;
+  return (
+    audit.candidates.find(
+      (candidate) => candidate.channel_id === audit.selected_channel_id,
+    ) || null
+  );
+}
+
+function buildDynamicWeightTooltip(audits, t) {
+  if (!Array.isArray(audits) || audits.length === 0) return null;
+  return (
+    <div style={{ lineHeight: 1.6, display: 'flex', flexDirection: 'column' }}>
+      <strong>{t('动态渠道权重')}</strong>
+      {audits.map((audit, index) => {
+        const score = selectedDynamicWeightScore(audit);
+        if (!score) return null;
+        return (
+          <div
+            key={`${audit.retry || 0}-${audit.selected_channel_id}-${index}`}
+          >
+            <div>
+              {t('第 {{attempt}} 次选渠', { attempt: index + 1 })}：
+              {audit.selected_channel_id} ({audit.mode || '-'})
+            </div>
+            <div>
+              {t('权重')}：{score.base_weight} → {score.effective_weight} (
+              {Number(score.multiplier || 0).toFixed(2)}x)
+            </div>
+            <div>
+              {t('选择概率')}：
+              {formatDynamicWeightPercent(audit.selected_probability)}
+            </div>
+            <div>
+              {t('样本')}：{score.sample_count}/{score.min_samples}{' '}
+              {score.ready ? t('已生效') : t('未达最少样本')}
+            </div>
+            <div>
+              FRT P50：
+              {Number(score.median_frt_ms) > 0
+                ? `${(Number(score.median_frt_ms) / 1000).toFixed(1)}s`
+                : '-'}
+            </div>
+            <div>
+              {t('成功率')}：{formatDynamicWeightPercent(score.success_rate)} ·
+              429：{formatDynamicWeightPercent(score.rate_429)} · 5xx：
+              {formatDynamicWeightPercent(score.rate_5xx)}
+            </div>
+            <div>
+              {t('数据来源')}：{score.source || '-'}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Render functions
 function renderType(type, t) {
   switch (type) {
@@ -144,10 +209,7 @@ function renderType(type, t) {
 
 function buildStreamStatusTooltip(ss, t) {
   if (!ss) return null;
-  const lines = [
-    t('流状态') + '：' + t('异常'),
-    (ss.end_reason || 'unknown'),
-  ];
+  const lines = [t('流状态') + '：' + t('异常'), ss.end_reason || 'unknown'];
   if (ss.error_count > 0) {
     lines.push(`${t('软错误')}: ${ss.error_count}`);
   }
@@ -185,11 +247,7 @@ function renderIsStream(bool, t, streamStatus) {
                 userSelect: 'none',
               }}
             >
-              <CircleAlert
-                size={14}
-                strokeWidth={2.5}
-                color='currentColor'
-              />
+              <CircleAlert size={14} strokeWidth={2.5} color='currentColor' />
             </span>
           </Tooltip>
         )}
@@ -461,7 +519,11 @@ function getUsageLogDetailSummary(record, text, billingDisplayMode, t) {
     };
   }
 
-  const summaryOpts = { ...other, displayMode: billingDisplayMode, outputMode: 'segments' };
+  const summaryOpts = {
+    ...other,
+    displayMode: billingDisplayMode,
+    outputMode: 'segments',
+  };
 
   if (other?.billing_mode === 'tiered_expr') {
     return { segments: renderTieredModelPriceSimple(summaryOpts) };
@@ -498,6 +560,8 @@ export const getLogsColumns = ({
         let multiKeyIndex = -1;
         let content = t('渠道') + `：${record.channel}`;
         let affinity = null;
+        let dynamicWeightAudits = null;
+        let latestDynamicWeightScore = null;
         let showMarker = false;
         let other = getLogOther(record.other);
         if (other?.admin_info) {
@@ -515,6 +579,15 @@ export const getLogsColumns = ({
           if (adminInfo.channel_affinity) {
             affinity = adminInfo.channel_affinity;
             showMarker = true;
+          }
+          if (
+            Array.isArray(adminInfo.dynamic_channel_weight) &&
+            adminInfo.dynamic_channel_weight.length > 0
+          ) {
+            dynamicWeightAudits = adminInfo.dynamic_channel_weight;
+            latestDynamicWeightScore = selectedDynamicWeightScore(
+              dynamicWeightAudits[dynamicWeightAudits.length - 1],
+            );
           }
         }
 
@@ -574,6 +647,26 @@ export const getLogsColumns = ({
                 </Tooltip>
               )}
             </span>
+            {latestDynamicWeightScore && (
+              <Tooltip
+                content={buildDynamicWeightTooltip(dynamicWeightAudits, t)}
+              >
+                <Tag
+                  color={
+                    !latestDynamicWeightScore.ready
+                      ? 'grey'
+                      : Number(latestDynamicWeightScore.multiplier) >= 1
+                        ? 'green'
+                        : Number(latestDynamicWeightScore.multiplier) >= 0.5
+                          ? 'orange'
+                          : 'red'
+                  }
+                  shape='circle'
+                >
+                  {t('动态')} {latestDynamicWeightScore.effective_weight}
+                </Tag>
+              </Tooltip>
+            )}
             {isMultiKey && (
               <Tag color='white' shape='circle'>
                 {multiKeyIndex}

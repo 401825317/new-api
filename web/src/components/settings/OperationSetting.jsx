@@ -75,6 +75,14 @@ const OperationSetting = () => {
       '100-199,300-399,401-407,409-499,500-503,505-523,525-599',
     'monitor_setting.auto_test_channel_enabled': false,
     'monitor_setting.auto_test_channel_minutes': 10 /* 签到设置 */,
+    'monitor_setting.dynamic_channel_weight_enabled': false,
+    'monitor_setting.dynamic_channel_weight_window_minutes': 15,
+    'monitor_setting.dynamic_channel_weight_min_samples': 20,
+    'monitor_setting.dynamic_channel_weight_target_frt_ms': 8000,
+    'monitor_setting.dynamic_channel_weight_error_penalty': 1,
+    'monitor_setting.dynamic_channel_weight_429_penalty': 1.5,
+    'monitor_setting.dynamic_channel_weight_min_multiplier': 0.25,
+    'monitor_setting.dynamic_channel_weight_max_multiplier': 2,
     'checkin_setting.enabled': false,
     'checkin_setting.min_quota': 1000,
     'checkin_setting.max_quota': 10000,
@@ -91,14 +99,19 @@ const OperationSetting = () => {
     if (success) {
       let newInputs = {};
       data.forEach((item) => {
-        if (typeof inputs[item.key] === 'boolean') {
+        if (
+          typeof inputs[item.key] === 'boolean' ||
+          item.key.endsWith('Enabled') ||
+          item.key.endsWith('enabled')
+        ) {
           newInputs[item.key] = toBoolean(item.value);
         } else {
           newInputs[item.key] = item.value;
         }
       });
 
-      setInputs(newInputs);
+      // Preserve defaults for options that have not been persisted yet.
+      setInputs((previous) => ({ ...previous, ...newInputs }));
     } else {
       showError(message);
     }
