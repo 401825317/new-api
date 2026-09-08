@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type recoveryFrame struct {
@@ -121,7 +123,11 @@ func recoveryError(data, eventType string) (*types.NewAPIError, bool) {
 		e.Message = "Upstream Responses stream failed"
 	}
 	code := strings.ToLower(fmt.Sprint(e.Code))
-	statusCode, penalize := http.StatusBadGateway, true
+	statusCode, hasExplicitStatus := recoveryEventStatusCode(root, code)
+	if !hasExplicitStatus {
+		statusCode = http.StatusBadGateway
+	}
+	penalize := true
 	switch {
 	case incomplete:
 		reason := root.Get("response.incomplete_details.reason").String()
@@ -135,9 +141,13 @@ func recoveryError(data, eventType string) (*types.NewAPIError, bool) {
 	case e.Type == "invalid_request_error" || strings.Contains(code, "context_length") || code == "content_filter" || code == "invalid_prompt":
 		statusCode, penalize = http.StatusBadRequest, false
 	case e.Type == "rate_limit_error" || code == "rate_limit_exceeded" || code == "429":
-		statusCode = http.StatusTooManyRequests
+		if !hasExplicitStatus {
+			statusCode = http.StatusTooManyRequests
+		}
 	case e.Type == "service_unavailable_error" || code == "model_at_capacity" || code == "server_error":
-		statusCode = http.StatusServiceUnavailable
+		if !hasExplicitStatus {
+			statusCode = http.StatusServiceUnavailable
+		}
 	case e.Type == "authentication_error":
 		statusCode = http.StatusUnauthorized
 	case e.Type == "permission_error":
@@ -147,6 +157,73 @@ func recoveryError(data, eventType string) (*types.NewAPIError, bool) {
 		return types.WithOpenAIError(e, statusCode, types.ErrOptionWithSkipRetry()), false
 	}
 	return types.WithOpenAIError(e, statusCode), true
+}
+
+func recoveryEventStatusCode(root gjson.Result, code string) (int, bool) {
+	for _, path := range []string{"status_code", "error.status_code", "response.status_code", "response.error.status_code"} {
+		value := root.Get(path)
+		if !value.Exists() {
+			continue
+		}
+		status := int(value.Int())
+		if status >= 400 && status <= 599 {
+			return status, true
+		}
+	}
+	status, err := strconv.Atoi(code)
+	if err == nil && status >= 400 && status <= 599 {
+		return status, true
+	}
+	return 0, false
+}
+
+func recoveryClientError(err *types.NewAPIError) types.OpenAIError {
+	clientError := err.ToOpenAIError()
+	// HTTP headers are already committed, so keep the original failure status
+	// in the message that OpenClaw persists and passes through ACP.
+	clientError.Message = err.MaskSensitiveErrorWithStatusCode()
+	if code := strings.TrimSpace(fmt.Sprint(clientError.Code)); code == "" || code == "<nil>" {
+		clientError.Code = err.GetErrorCode()
+	}
+	return clientError
+}
+
+// committedRecoveryFailureFrame is the downstream compatibility boundary for
+// interrupted streams. OpenClaw reads code/message at the top level of an
+// `error` event, while `response.failed` carries them under response.error.
+// Normalize both shapes so the desktop client can classify and replay a
+// side-effect-free text turn after the HTTP status has already become 200.
+func committedRecoveryFailureFrame(err *types.NewAPIError, original *recoveryFrame, sequence int64) recoveryFrame {
+	clientError := recoveryClientError(err)
+	if original != nil {
+		eventType := original.event
+		if eventType == "" {
+			eventType = gjson.Get(original.data, "type").String()
+		}
+		if eventType == "response.failed" {
+			errorJSON, marshalErr := common.Marshal(clientError)
+			if marshalErr == nil {
+				patched, patchErr := sjson.SetRaw(original.data, "response.error", string(errorJSON))
+				if patchErr == nil {
+					return recoveryFrame{event: "response.failed", data: patched}
+				}
+			}
+		}
+		if value := gjson.Get(original.data, "sequence_number"); value.Exists() {
+			sequence = value.Int() - 1
+		}
+	}
+	payload, marshalErr := common.Marshal(map[string]any{
+		"type":            "error",
+		"code":            clientError.Code,
+		"message":         clientError.Message,
+		"param":           clientError.Param,
+		"sequence_number": sequence + 1,
+	})
+	if marshalErr != nil {
+		payload = []byte(fmt.Sprintf(`{"type":"error","code":"bad_response","message":"status_code=%d, upstream Responses stream failed","sequence_number":%d}`, err.StatusCode, sequence+1))
+	}
+	return recoveryFrame{event: "error", data: string(payload)}
 }
 
 func recoveryUsage(r *dto.OpenAIResponsesResponse, u *dto.Usage) {
@@ -351,12 +428,7 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	}
 	fail := func(err *types.NewAPIError, reason relaycommon.StreamEndReason, penalize bool, original *recoveryFrame) (*dto.Usage, *types.NewAPIError) {
 		if outcome.Committed && c.Request.Context().Err() == nil {
-			if original != nil {
-				_ = write(*original)
-			} else {
-				payload, _ := common.Marshal(map[string]any{"type": "error", "error": err.ToOpenAIError(), "sequence_number": sequence + 1})
-				_ = write(recoveryFrame{event: "error", data: string(payload)})
-			}
+			_ = write(committedRecoveryFailureFrame(err, original, sequence))
 		}
 		return finish(err, reason, penalize)
 	}

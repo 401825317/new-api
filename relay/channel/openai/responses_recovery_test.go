@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 const recoveryCreated = "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"status\":\"in_progress\",\"output\":[]}}\n\n"
@@ -106,6 +108,88 @@ func TestResponsesRecoveryEvents(t *testing.T) {
 			} else {
 				require.Empty(t, info.ResponsesRecovery.CommitEvent)
 			}
+		})
+	}
+}
+
+func lastRecoveryData(body string) string {
+	lines := strings.Split(body, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(lines[i], "data: ") {
+			return strings.TrimPrefix(lines[i], "data: ")
+		}
+	}
+	return ""
+}
+
+func TestResponsesRecoveryCommittedFailureClientContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name, body, event string
+		status            int
+	}{
+		{
+			name:   "nested_error",
+			body:   recoveryDelta + recoveryOverload,
+			event:  "error",
+			status: http.StatusServiceUnavailable,
+		},
+		{
+			name:   "truncated_stream",
+			body:   recoveryDelta,
+			event:  "error",
+			status: http.StatusBadGateway,
+		},
+		{
+			name: "explicit_429",
+			body: recoveryDelta + "event: error\n" +
+				"data: {\"type\":\"error\",\"error\":{\"code\":\"429\",\"message\":\"rate limited\"},\"sequence_number\":2}\n\n",
+			event:  "error",
+			status: http.StatusTooManyRequests,
+		},
+		{
+			name: "explicit_504",
+			body: recoveryDelta + "event: error\n" +
+				"data: {\"type\":\"error\",\"error\":{\"code\":\"upstream_timeout\",\"message\":\"gateway timeout\",\"status_code\":504},\"sequence_number\":2}\n\n",
+			event:  "error",
+			status: http.StatusGatewayTimeout,
+		},
+		{
+			name: "explicit_524",
+			body: recoveryDelta + "event: error\n" +
+				"data: {\"type\":\"error\",\"error\":{\"code\":\"524\",\"message\":\"Cloudflare timeout\"},\"sequence_number\":2}\n\n",
+			event:  "error",
+			status: 524,
+		},
+		{
+			name: "response_failed",
+			body: recoveryDelta +
+				"event: response.failed\n" +
+				"data: {\"type\":\"response.failed\",\"sequence_number\":2,\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"overload\"}}}\n\n",
+			event:  "response.failed",
+			status: http.StatusServiceUnavailable,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, info, _, err := runRecovery(io.NopCloser(strings.NewReader(tt.body)), context.Background(), "")
+			require.Nil(t, err)
+			require.Equal(t, http.StatusOK, w.Code)
+			require.True(t, info.ResponsesRecovery.Committed)
+			require.NotNil(t, info.ResponsesRecovery.Error)
+			require.Equal(t, tt.status, info.ResponsesRecovery.Error.StatusCode)
+
+			data := lastRecoveryData(w.Body.String())
+			require.True(t, gjson.Valid(data), data)
+			require.Equal(t, tt.event, gjson.Get(data, "type").String())
+			if tt.event == "response.failed" {
+				require.Contains(t, gjson.Get(data, "response.error.message").String(), fmt.Sprintf("status_code=%d", tt.status))
+				return
+			}
+			require.False(t, gjson.Get(data, "error").Exists(), "OpenClaw ignores nested error objects")
+			require.NotEmpty(t, gjson.Get(data, "code").String())
+			require.Contains(t, gjson.Get(data, "message").String(), fmt.Sprintf("status_code=%d", tt.status))
 		})
 	}
 }
