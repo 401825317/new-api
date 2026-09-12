@@ -36,6 +36,7 @@ CONNECT_TIMEOUT_MS = int(os.getenv("ALIYUN_CONNECT_TIMEOUT_MS", "3000"))
 READ_TIMEOUT_MS = int(os.getenv("ALIYUN_READ_TIMEOUT_MS", "10000"))
 MAX_BODY_BYTES = int(os.getenv("MAX_BODY_BYTES", str(1024 * 1024)))
 MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "100000"))
+ALIYUN_MAX_CONTENT_CHARS = int(os.getenv("ALIYUN_MAX_CONTENT_CHARS", "1800"))
 ADAPTER_API_KEY = os.getenv("ADAPTER_API_KEY", "").strip()
 
 
@@ -101,10 +102,9 @@ def extract_prompt(payload: dict[str, Any]) -> str:
     for message in messages:
         if not isinstance(message, dict):
             continue
-        role = str(message.get("role") or "user")
         text = extract_text_part(message.get("content"))
         if text.strip():
-            parts.append(f"{role}: {text}")
+            parts.append(text)
     prompt = "\n\n".join(parts).strip()
     if len(prompt) > MAX_PROMPT_CHARS:
         prompt = prompt[:MAX_PROMPT_CHARS]
@@ -113,8 +113,12 @@ def extract_prompt(payload: dict[str, Any]) -> str:
 
 def normalize_suggestion(value: Any) -> str:
     suggestion = str(value or "").strip().lower()
-    if suggestion in {"pass", "review", "block"}:
-        return suggestion
+    if suggestion == "pass":
+        return "pass"
+    if suggestion == "block":
+        return "block"
+    if suggestion in {"review", "watch", "mask"}:
+        return "review"
     return "review"
 
 
@@ -190,7 +194,7 @@ def categories_from_response(data: Any) -> list[str]:
     return categories
 
 
-def call_guardrail(prompt: str, request_id: str) -> tuple[str, list[str], str]:
+def call_guardrail_once(prompt: str, request_id: str) -> tuple[str, list[str], str]:
     service_parameters = json.dumps(
         {
             "content": prompt,
@@ -209,7 +213,14 @@ def call_guardrail(prompt: str, request_id: str) -> tuple[str, list[str], str]:
     body = response.body
     code = getattr(body, "code", None)
     if code != 200:
-        raise RuntimeError(f"aliyun_guardrail_code_{code}")
+        message = str(getattr(body, "message", "") or "").strip()
+        aliyun_request_id = str(getattr(body, "request_id", "") or "").strip()
+        detail = f"aliyun_guardrail_code_{code}"
+        if message:
+            detail += f": {message}"
+        if aliyun_request_id:
+            detail += f" request_id={aliyun_request_id}"
+        raise RuntimeError(detail)
 
     data = getattr(body, "data", None)
     suggestion = normalize_suggestion(getattr(data, "suggestion", None))
@@ -217,6 +228,31 @@ def call_guardrail(prompt: str, request_id: str) -> tuple[str, list[str], str]:
     if suggestion == "pass":
         categories = []
     return safety_from_suggestion(suggestion), categories, str(getattr(body, "request_id", "") or "")
+
+
+def prompt_chunks(prompt: str) -> list[str]:
+    max_chars = max(128, min(ALIYUN_MAX_CONTENT_CHARS, MAX_PROMPT_CHARS))
+    return [prompt[i : i + max_chars] for i in range(0, len(prompt), max_chars)] or [prompt]
+
+
+def call_guardrail(prompt: str, request_id: str) -> tuple[str, list[str], str]:
+    highest = "pass"
+    categories: list[str] = []
+    request_ids: list[str] = []
+    for index, chunk in enumerate(prompt_chunks(prompt), start=1):
+        safety, chunk_categories, aliyun_request_id = call_guardrail_once(chunk, f"{request_id}-{index}")
+        if aliyun_request_id:
+            request_ids.append(aliyun_request_id)
+        if safety == "Unsafe":
+            highest = "block"
+        elif safety == "Controversial" and highest != "block":
+            highest = "review"
+        for category in chunk_categories:
+            if category not in categories:
+                categories.append(category)
+    if highest == "pass":
+        categories = []
+    return safety_from_suggestion(highest), categories, ",".join(request_ids)
 
 
 def openai_completion(model: str, content: str) -> dict[str, Any]:
