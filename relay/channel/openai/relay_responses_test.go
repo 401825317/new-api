@@ -119,6 +119,24 @@ func TestOaiResponsesStreamHandler_AllowsFallbackOnlyAfterCompleted(t *testing.T
 	require.Greater(t, usage.CompletionTokens, 0)
 }
 
+func TestOaiResponsesStreamHandler_AllowsEOFAfterCompletedEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	c, _, resp, info := newResponsesStreamTestContext(t,
+		"data: "+`{"type":"response.output_text.delta","delta":"completed before eof"}`+"\n"+
+			"data: "+`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":4,"total_tokens":9}}}`+"\n",
+	)
+
+	usage, err := OaiResponsesStreamHandler(c, info, resp)
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 5, usage.PromptTokens)
+	require.Equal(t, 4, usage.CompletionTokens)
+	require.Equal(t, 9, usage.TotalTokens)
+	require.NotNil(t, info.StreamStatus)
+	require.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
+}
+
 func TestOaiResponsesToChatStreamHandler_RequiresCompletedEvent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
