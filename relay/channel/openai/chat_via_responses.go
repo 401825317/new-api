@@ -102,13 +102,15 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	model := info.UpstreamModelName
 
 	var (
-		usage       = &dto.Usage{}
-		outputText  strings.Builder
-		usageText   strings.Builder
-		sentStart   bool
-		sentStop    bool
-		sawToolCall bool
-		streamErr   *types.NewAPIError
+		usage                  = &dto.Usage{}
+		outputText             strings.Builder
+		usageText              strings.Builder
+		sentStart              bool
+		sentStop               bool
+		sawToolCall            bool
+		streamErr              *types.NewAPIError
+		completedReceived      bool
+		completedUsageReceived bool
 	)
 
 	toolCallIndexByID := make(map[string]int)
@@ -305,7 +307,13 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		var streamResp dto.ResponsesStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResp); err != nil {
 			logger.LogError(c, "failed to unmarshal responses stream event: "+err.Error())
-			sr.Error(err)
+			streamErr = types.NewOpenAIError(
+				err,
+				types.ErrorCodeBadResponseBody,
+				http.StatusBadGateway,
+				responsesStreamErrorOptions(c, info)...,
+			)
+			sr.Stop(streamErr)
 			return
 		}
 
@@ -443,35 +451,52 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		case "response.function_call_arguments.done":
 
 		case "response.completed":
-			if streamResp.Response != nil {
-				if streamResp.Response.Model != "" {
-					model = streamResp.Response.Model
+			if streamResp.Response == nil {
+				streamErr = newResponsesStreamError(c, info, data, &streamResp)
+				sr.Stop(streamErr)
+				return
+			}
+			status := strings.TrimSpace(common.JsonRawMessageToString(streamResp.Response.Status))
+			if status != "completed" {
+				streamErr = types.NewOpenAIError(
+					fmt.Errorf("responses completed event has unexpected status %q", status),
+					types.ErrorCodeBadResponse,
+					http.StatusBadGateway,
+					responsesStreamErrorOptions(c, info)...,
+				)
+				sr.Stop(streamErr)
+				return
+			}
+
+			completedReceived = true
+			if streamResp.Response.Model != "" {
+				model = streamResp.Response.Model
+			}
+			if streamResp.Response.CreatedAt != 0 {
+				createAt = int64(streamResp.Response.CreatedAt)
+			}
+			if streamResp.Response.Usage != nil {
+				completedUsageReceived = true
+				if streamResp.Response.Usage.InputTokens != 0 {
+					usage.PromptTokens = streamResp.Response.Usage.InputTokens
+					usage.InputTokens = streamResp.Response.Usage.InputTokens
 				}
-				if streamResp.Response.CreatedAt != 0 {
-					createAt = int64(streamResp.Response.CreatedAt)
+				if streamResp.Response.Usage.OutputTokens != 0 {
+					usage.CompletionTokens = streamResp.Response.Usage.OutputTokens
+					usage.OutputTokens = streamResp.Response.Usage.OutputTokens
 				}
-				if streamResp.Response.Usage != nil {
-					if streamResp.Response.Usage.InputTokens != 0 {
-						usage.PromptTokens = streamResp.Response.Usage.InputTokens
-						usage.InputTokens = streamResp.Response.Usage.InputTokens
-					}
-					if streamResp.Response.Usage.OutputTokens != 0 {
-						usage.CompletionTokens = streamResp.Response.Usage.OutputTokens
-						usage.OutputTokens = streamResp.Response.Usage.OutputTokens
-					}
-					if streamResp.Response.Usage.TotalTokens != 0 {
-						usage.TotalTokens = streamResp.Response.Usage.TotalTokens
-					} else {
-						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-					}
-					if streamResp.Response.Usage.InputTokensDetails != nil {
-						usage.PromptTokensDetails.CachedTokens = streamResp.Response.Usage.InputTokensDetails.CachedTokens
-						usage.PromptTokensDetails.ImageTokens = streamResp.Response.Usage.InputTokensDetails.ImageTokens
-						usage.PromptTokensDetails.AudioTokens = streamResp.Response.Usage.InputTokensDetails.AudioTokens
-					}
-					if streamResp.Response.Usage.CompletionTokenDetails.ReasoningTokens != 0 {
-						usage.CompletionTokenDetails.ReasoningTokens = streamResp.Response.Usage.CompletionTokenDetails.ReasoningTokens
-					}
+				if streamResp.Response.Usage.TotalTokens != 0 {
+					usage.TotalTokens = streamResp.Response.Usage.TotalTokens
+				} else {
+					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+				}
+				if streamResp.Response.Usage.InputTokensDetails != nil {
+					usage.PromptTokensDetails.CachedTokens = streamResp.Response.Usage.InputTokensDetails.CachedTokens
+					usage.PromptTokensDetails.ImageTokens = streamResp.Response.Usage.InputTokensDetails.ImageTokens
+					usage.PromptTokensDetails.AudioTokens = streamResp.Response.Usage.InputTokensDetails.AudioTokens
+				}
+				if streamResp.Response.Usage.CompletionTokenDetails.ReasoningTokens != 0 {
+					usage.CompletionTokenDetails.ReasoningTokens = streamResp.Response.Usage.CompletionTokenDetails.ReasoningTokens
 				}
 			}
 
@@ -495,15 +520,8 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 				sentStop = true
 			}
 
-		case "response.error", "response.failed":
-			if streamResp.Response != nil {
-				if oaiErr := streamResp.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
-					streamErr = types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
-					sr.Stop(streamErr)
-					return
-				}
-			}
-			streamErr = types.NewOpenAIError(fmt.Errorf("responses stream error: %s", streamResp.Type), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		case "response.error", "response.failed", "error":
+			streamErr = newResponsesStreamError(c, info, data, &streamResp)
 			sr.Stop(streamErr)
 			return
 
@@ -512,17 +530,26 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	})
 
 	if responsesToChatStreamClientGoneAfterStarted(info) {
-		if usage.TotalTokens == 0 {
+		if completedReceived && !completedUsageReceived && usage.TotalTokens == 0 {
 			usage = service.ResponseText2Usage(c, usageText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		}
-		return usage, nil
+		if completedReceived {
+			return usage, nil
+		}
+		return nil, newResponsesStreamIncompleteError(c, info)
 	}
 
 	if streamErr != nil {
 		return nil, streamErr
 	}
 
-	if usage.TotalTokens == 0 {
+	if !completedReceived {
+		return nil, newResponsesStreamIncompleteError(c, info)
+	}
+
+	// Estimate text only for a valid completed response whose terminal event
+	// omitted usage. A truncated stream must remain non-billable.
+	if !completedUsageReceived {
 		usage = service.ResponseText2Usage(c, usageText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 	}
 

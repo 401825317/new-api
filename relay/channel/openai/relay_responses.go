@@ -76,7 +76,12 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	defer service.CloseResponseBodyGracefully(resp)
 
-	var usage = &dto.Usage{}
+	var (
+		usage                  = &dto.Usage{}
+		completedReceived      bool
+		completedUsageReceived bool
+		streamErr              *types.NewAPIError
+	)
 	var responseTextBuilder strings.Builder
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
@@ -85,32 +90,55 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		var streamResponse dto.ResponsesStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
 			logger.LogError(c, "failed to unmarshal stream response: "+err.Error())
-			sr.Error(err)
+			streamErr = types.NewOpenAIError(
+				err,
+				types.ErrorCodeBadResponseBody,
+				http.StatusBadGateway,
+				responsesStreamErrorOptions(c, info)...,
+			)
+			sr.Stop(streamErr)
 			return
 		}
 		sendResponsesStreamData(c, streamResponse, data)
 		switch streamResponse.Type {
 		case "response.completed":
-			if streamResponse.Response != nil {
-				if streamResponse.Response.Usage != nil {
-					if streamResponse.Response.Usage.InputTokens != 0 {
-						usage.PromptTokens = streamResponse.Response.Usage.InputTokens
-					}
-					if streamResponse.Response.Usage.OutputTokens != 0 {
-						usage.CompletionTokens = streamResponse.Response.Usage.OutputTokens
-					}
-					if streamResponse.Response.Usage.TotalTokens != 0 {
-						usage.TotalTokens = streamResponse.Response.Usage.TotalTokens
-					}
-					if streamResponse.Response.Usage.InputTokensDetails != nil {
-						usage.PromptTokensDetails.CachedTokens = streamResponse.Response.Usage.InputTokensDetails.CachedTokens
-					}
+			if streamResponse.Response == nil {
+				streamErr = newResponsesStreamError(c, info, data, &streamResponse)
+				sr.Stop(streamErr)
+				return
+			}
+			status := strings.TrimSpace(common.JsonRawMessageToString(streamResponse.Response.Status))
+			if status != "completed" {
+				streamErr = types.NewOpenAIError(
+					fmt.Errorf("responses completed event has unexpected status %q", status),
+					types.ErrorCodeBadResponse,
+					http.StatusBadGateway,
+					responsesStreamErrorOptions(c, info)...,
+				)
+				sr.Stop(streamErr)
+				return
+			}
+
+			completedReceived = true
+			if streamResponse.Response.Usage != nil {
+				completedUsageReceived = true
+				if streamResponse.Response.Usage.InputTokens != 0 {
+					usage.PromptTokens = streamResponse.Response.Usage.InputTokens
 				}
-				if streamResponse.Response.HasImageGenerationCall() {
-					c.Set("image_generation_call", true)
-					c.Set("image_generation_call_quality", streamResponse.Response.GetQuality())
-					c.Set("image_generation_call_size", streamResponse.Response.GetSize())
+				if streamResponse.Response.Usage.OutputTokens != 0 {
+					usage.CompletionTokens = streamResponse.Response.Usage.OutputTokens
 				}
+				if streamResponse.Response.Usage.TotalTokens != 0 {
+					usage.TotalTokens = streamResponse.Response.Usage.TotalTokens
+				}
+				if streamResponse.Response.Usage.InputTokensDetails != nil {
+					usage.PromptTokensDetails.CachedTokens = streamResponse.Response.Usage.InputTokensDetails.CachedTokens
+				}
+			}
+			if streamResponse.Response.HasImageGenerationCall() {
+				c.Set("image_generation_call", true)
+				c.Set("image_generation_call_quality", streamResponse.Response.GetQuality())
+				c.Set("image_generation_call_size", streamResponse.Response.GetSize())
 			}
 		case "response.output_text.delta":
 			// 处理输出文本
@@ -127,14 +155,28 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 					}
 				}
 			}
+		case "response.failed", "response.error", "error":
+			streamErr = newResponsesStreamError(c, info, data, &streamResponse)
+			logger.LogError(c, "responses stream failure: "+streamErr.Error())
+			sr.Stop(streamErr)
+			return
 		}
 	})
 
-	if usage.CompletionTokens == 0 {
+	if streamErr != nil {
+		return nil, streamErr
+	}
+	if !completedReceived {
+		return nil, newResponsesStreamIncompleteError(c, info)
+	}
+
+	// Text estimation is only a compatibility fallback for a valid completed
+	// response whose terminal event omitted usage. It must never turn a
+	// truncated or failed stream into a billable success.
+	if !completedUsageReceived {
 		// 计算输出文本的 token 数量
 		tempStr := responseTextBuilder.String()
 		if len(tempStr) > 0 {
-			// 非正常结束，使用输出文本的 token 数量
 			completionTokens := service.CountTextToken(tempStr, info.UpstreamModelName)
 			usage.CompletionTokens = completionTokens
 		}
@@ -147,4 +189,71 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
 	return usage, nil
+}
+
+func responsesStreamErrorOptions(c *gin.Context, info *relaycommon.RelayInfo) []types.NewAPIErrorOptions {
+	if helper.HasStreamResponseStarted(c) || (info != nil && info.ReceivedResponseCount > 0) {
+		return []types.NewAPIErrorOptions{types.ErrOptionWithSkipRetry()}
+	}
+	return nil
+}
+
+func newResponsesStreamError(c *gin.Context, info *relaycommon.RelayInfo, data string, streamResponse *dto.ResponsesStreamResponse) *types.NewAPIError {
+	fallbackMessage := "responses stream failed"
+	if streamResponse != nil && streamResponse.Type != "" {
+		fallbackMessage = fmt.Sprintf("responses stream error: %s", streamResponse.Type)
+	}
+	options := responsesStreamErrorOptions(c, info)
+
+	if streamResponse != nil && streamResponse.Response != nil {
+		if openAIError := streamResponse.Response.GetOpenAIError(); openAIError != nil &&
+			(openAIError.Type != "" || openAIError.Message != "" || openAIError.Code != nil) {
+			if openAIError.Message == "" {
+				openAIError.Message = fallbackMessage
+			}
+			return types.WithOpenAIError(*openAIError, http.StatusBadGateway, options...)
+		}
+	}
+
+	var eventError struct {
+		Error   any    `json:"error"`
+		Message string `json:"message"`
+		Code    any    `json:"code"`
+	}
+	if common.UnmarshalJsonStr(data, &eventError) == nil {
+		if openAIError := dto.GetOpenAIError(eventError.Error); openAIError != nil &&
+			(openAIError.Type != "" || openAIError.Message != "" || openAIError.Code != nil) {
+			if openAIError.Message == "" {
+				openAIError.Message = fallbackMessage
+			}
+			return types.WithOpenAIError(*openAIError, http.StatusBadGateway, options...)
+		}
+		if eventError.Message != "" {
+			return types.WithOpenAIError(types.OpenAIError{
+				Message: eventError.Message,
+				Type:    "upstream_error",
+				Code:    eventError.Code,
+			}, http.StatusBadGateway, options...)
+		}
+	}
+
+	return types.NewOpenAIError(
+		fmt.Errorf("%s", fallbackMessage),
+		types.ErrorCodeBadResponse,
+		http.StatusBadGateway,
+		options...,
+	)
+}
+
+func newResponsesStreamIncompleteError(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
+	endReason := "unknown"
+	if info != nil && info.StreamStatus != nil && info.StreamStatus.EndReason != "" {
+		endReason = string(info.StreamStatus.EndReason)
+	}
+	return types.NewOpenAIError(
+		fmt.Errorf("responses stream ended before response.completed (end_reason=%s)", endReason),
+		types.ErrorCodeBadResponse,
+		http.StatusBadGateway,
+		responsesStreamErrorOptions(c, info)...,
+	)
 }
