@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -38,6 +39,25 @@ MAX_BODY_BYTES = int(os.getenv("MAX_BODY_BYTES", str(1024 * 1024)))
 MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "100000"))
 ALIYUN_MAX_CONTENT_CHARS = int(os.getenv("ALIYUN_MAX_CONTENT_CHARS", "1800"))
 ADAPTER_API_KEY = os.getenv("ADAPTER_API_KEY", "").strip()
+FAIL_OPEN_ON_GUARDRAIL_UNAVAILABLE = os.getenv("FAIL_OPEN_ON_GUARDRAIL_UNAVAILABLE", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+LOCAL_FALLBACK_ENABLED = os.getenv("LOCAL_FALLBACK_ENABLED", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+LOCAL_FALLBACK_DEFAULT_SAFETY = os.getenv("LOCAL_FALLBACK_DEFAULT_SAFETY", "Safe").strip() or "Safe"
+SIMULATE_GUARDRAIL_UNAVAILABLE = os.getenv("SIMULATE_GUARDRAIL_UNAVAILABLE", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 QWEN3_CATEGORIES = {
@@ -51,6 +71,73 @@ QWEN3_CATEGORIES = {
     "copyright_violation",
     "jailbreak",
 }
+
+
+LOCAL_HIGH_RISK_RULES: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    (
+        "jailbreak",
+        "jailbreak",
+        re.compile(
+            r"(?is)(ignore|bypass|override|disable).{0,80}"
+            r"(system|developer|safety|policy|guardrail|moderation|filter|instruction)"
+            r"|越狱|绕过.{0,20}(审核|安全|限制|规则)|忽略.{0,20}(系统|开发者|安全|规则|限制)",
+        ),
+    ),
+    (
+        "credential_theft",
+        "non_violent_illegal_acts",
+        re.compile(
+            r"(?is)(steal|dump|exfiltrate|extract|harvest).{0,80}"
+            r"(password|credential|cookie|token|api[_ -]?key|session|oauth|jwt)"
+            r"|盗取.{0,20}(密码|凭证|cookie|token|密钥|会话)"
+            r"|窃取.{0,20}(密码|凭证|cookie|token|密钥|会话)",
+        ),
+    ),
+    (
+        "malware",
+        "non_violent_illegal_acts",
+        re.compile(
+            r"(?is)(ransomware|keylogger|credential stealer|reverse shell|botnet|rootkit)"
+            r"|恶意软件|勒索软件|键盘记录器|远控木马|反弹shell|后门程序",
+        ),
+    ),
+    (
+        "violent_weapon",
+        "violent",
+        re.compile(
+            r"(?is)(build|make|manufacture|assemble).{0,80}"
+            r"(bomb|explosive|grenade|unregistered firearm|ghost gun)"
+            r"|制作.{0,20}(炸弹|爆炸物|枪支|手枪|步枪)"
+            r"|自制.{0,20}(炸弹|爆炸物|枪支|手枪|步枪)",
+        ),
+    ),
+    (
+        "sexual_minors",
+        "sexual_content_or_sexual_acts",
+        re.compile(
+            r"(?is)(child sexual|minor sexual|underage sexual|csam)"
+            r"|未成年.{0,20}(性|色情|裸照|性行为)"
+            r"|儿童.{0,20}(性|色情|裸照|性行为)",
+        ),
+    ),
+    (
+        "self_harm",
+        "suicide_and_self_harm",
+        re.compile(
+            r"(?is)(how to|best way to|instructions? to).{0,80}"
+            r"(kill myself|commit suicide|self harm)"
+            r"|如何.{0,20}(自杀|自残)|怎么.{0,20}(自杀|自残)",
+        ),
+    ),
+    (
+        "fraud",
+        "non_violent_illegal_acts",
+        re.compile(
+            r"(?is)(phishing kit|carding|bypass kyc|fake id|money laundering)"
+            r"|钓鱼网站|洗钱|伪造.{0,20}(身份证|护照|证件)|绕过.{0,20}实名",
+        ),
+    ),
+)
 
 
 def build_aliyun_client() -> Client:
@@ -194,7 +281,43 @@ def categories_from_response(data: Any) -> list[str]:
     return categories
 
 
+def normalize_default_fallback_safety() -> str:
+    candidate = LOCAL_FALLBACK_DEFAULT_SAFETY.strip().lower()
+    if candidate == "controversial":
+        return "Controversial"
+    if candidate == "unsafe":
+        return "Unsafe"
+    return "Safe"
+
+
+def local_fallback_guard(prompt: str) -> tuple[str, list[str], list[str]]:
+    """Classify obvious high-risk prompts without calling Alibaba Cloud.
+
+    This is intentionally conservative. It only blocks high-confidence patterns
+    during upstream guardrail outages, so a billing or network issue does not
+    take down the main request path while still catching the riskiest abuse.
+    """
+
+    if not LOCAL_FALLBACK_ENABLED:
+        return normalize_default_fallback_safety(), [], []
+
+    categories: list[str] = []
+    rules: list[str] = []
+    for rule_id, category, pattern in LOCAL_HIGH_RISK_RULES:
+        if not pattern.search(prompt):
+            continue
+        rules.append(rule_id)
+        if category not in categories:
+            categories.append(category)
+
+    if categories:
+        return "Unsafe", categories, rules
+    return normalize_default_fallback_safety(), [], []
+
+
 def call_guardrail_once(prompt: str, request_id: str) -> tuple[str, list[str], str]:
+    if SIMULATE_GUARDRAIL_UNAVAILABLE:
+        raise RuntimeError("simulated_guardrail_unavailable")
     service_parameters = json.dumps(
         {
             "content": prompt,
@@ -358,10 +481,23 @@ class Handler(BaseHTTPRequestHandler):
         started = time.time()
         try:
             safety, categories, aliyun_request_id = call_guardrail(prompt, request_id)
-        except Exception as exc:  # noqa: BLE001 - return a clear 503 to the caller, without prompt leakage.
-            write_log("guardrail_failed", request_id=request_id, error=str(exc), latency_ms=int((time.time() - started) * 1000))
-            self.write_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": {"message": "guardrail unavailable", "type": "server_error"}})
-            return
+        except Exception as exc:  # noqa: BLE001 - keep the main gateway available without prompt leakage.
+            fallback_safety, fallback_categories, fallback_rules = local_fallback_guard(prompt)
+            write_log(
+                "guardrail_degraded",
+                request_id=request_id,
+                error=str(exc),
+                fallback_safety=fallback_safety,
+                fallback_categories=fallback_categories,
+                fallback_rules=fallback_rules,
+                fail_open=FAIL_OPEN_ON_GUARDRAIL_UNAVAILABLE,
+                latency_ms=int((time.time() - started) * 1000),
+            )
+            if FAIL_OPEN_ON_GUARDRAIL_UNAVAILABLE:
+                safety, categories, aliyun_request_id = fallback_safety, fallback_categories, ""
+            else:
+                self.write_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": {"message": "guardrail unavailable", "type": "server_error"}})
+                return
 
         category_text = "None" if not categories else ", ".join(categories)
         guard_content = f"Safety: {safety}\nCategories: {category_text}"
