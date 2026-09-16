@@ -577,12 +577,14 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	// do not understand provider-bound reasoning/compaction state. Sanitize the
 	// per-attempt copy here so OpenAI, OpenRouter and Xinference paths receive
 	// the same protection as the native DeepSeek/xAI adaptors.
-	removedReasoning, removedCompaction, err := relayhelper.StripForeignResponsesState(&request)
+	// 该渠道类型可能承载任意 OpenAI 兼容上游，包括映射到 DeepSeek 模型的 type=1 渠道，
+	// 因此按实际上游家族决定是保留可见 reasoning_text 还是整条丢弃不透明状态。
+	stripResult, err := relayhelper.StripForeignResponsesState(&request, relayhelper.ResponsesStatePolicyForUpstream(info))
 	if err != nil {
 		return nil, err
 	}
-	if removedReasoning+removedCompaction > 0 && c != nil {
-		logger.LogInfo(c, fmt.Sprintf("OpenAI-compatible Responses request removed provider-bound state: reasoning=%d compaction=%d", removedReasoning, removedCompaction))
+	if stripResult.Changed() && c != nil {
+		logger.LogInfo(c, fmt.Sprintf("OpenAI-compatible Responses request sanitized provider-bound state: removed_reasoning=%d removed_compaction=%d passed_through_reasoning=%d", stripResult.RemovedReasoning, stripResult.RemovedCompaction, stripResult.PassedThroughReasoning))
 	}
 	//  转换模型推理力度后缀
 	effort, originModel := reasoning.ParseOpenAIReasoningEffortFromModelSuffix(request.Model)

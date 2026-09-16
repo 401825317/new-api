@@ -163,29 +163,38 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
-	removedReasoning, removedCompaction, err := stripForeignResponsesState(&request)
+	// DeepSeek 系上游能校验自己产出的可见 reasoning_text，所以这里按上游家族选择清洗策略：
+	// 同族回放只剥掉 encrypted_content，跨族回放才整条丢弃无法校验的状态。
+	policy := helper.ResponsesStatePolicyForUpstream(info)
+	stripResult, err := stripForeignResponsesState(&request, policy)
 	if err != nil {
 		return nil, err
 	}
-	if removedReasoning+removedCompaction > 0 {
+	if stripResult.RemovedReasoning > 0 {
+		// 推理状态被整条丢弃后，上游无法校验客户端回放的 thinking；此时继续开启 thinking
+		// 会被以“reasoning_text 必须回传”拒绝，因此在无法回放时同步关闭 thinking。
+		//
+		// 注意：同族回放（PassThroughReasoning）不会走到这里，推理状态原样送回上游；
+		// 只有 compaction 类状态被删除不影响 thinking 契约，因此这里只按 reasoning 计数判断。
 		if request.Reasoning == nil {
 			request.Reasoning = &dto.Reasoning{}
 		}
 		request.Reasoning.Effort = "none"
-		if c != nil {
-			logger.LogInfo(c, fmt.Sprintf(
-				"deepseek responses fallback removed provider-bound state: reasoning=%d compaction=%d",
-				removedReasoning,
-				removedCompaction,
-			))
-		}
+	}
+	if stripResult.Changed() && c != nil {
+		logger.LogInfo(c, fmt.Sprintf(
+			"deepseek responses fallback sanitized provider-bound state: removed_reasoning=%d removed_compaction=%d passed_through_reasoning=%d",
+			stripResult.RemovedReasoning,
+			stripResult.RemovedCompaction,
+			stripResult.PassedThroughReasoning,
+		))
 	}
 	applyDeepSeekV4ResponsesThinkingSuffix(info, &request)
 	return request, nil
 }
 
-func stripForeignResponsesState(request *dto.OpenAIResponsesRequest) (removedReasoning int, removedCompaction int, err error) {
-	return helper.StripForeignResponsesState(request)
+func stripForeignResponsesState(request *dto.OpenAIResponsesRequest, policy helper.ResponsesStatePolicy) (helper.ResponsesStateStripResult, error) {
+	return helper.StripForeignResponsesState(request, policy)
 }
 
 func applyDeepSeekV4ResponsesThinkingSuffix(info *relaycommon.RelayInfo, request *dto.OpenAIResponsesRequest) {

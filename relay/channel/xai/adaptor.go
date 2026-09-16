@@ -104,12 +104,12 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
-	removedReasoning, removedCompaction, err := helper.StripForeignResponsesState(&request)
+	stripResult, err := helper.StripForeignResponsesState(&request, helper.ResponsesStatePolicyForUpstream(info))
 	if err != nil {
 		return nil, err
 	}
-	if removedReasoning+removedCompaction > 0 && c != nil {
-		logger.LogInfo(c, fmt.Sprintf("xAI responses fallback removed provider-bound state: reasoning=%d compaction=%d", removedReasoning, removedCompaction))
+	if stripResult.Changed() && c != nil {
+		logger.LogInfo(c, fmt.Sprintf("xAI responses fallback sanitized provider-bound state: removed_reasoning=%d removed_compaction=%d passed_through_reasoning=%d", stripResult.RemovedReasoning, stripResult.RemovedCompaction, stripResult.PassedThroughReasoning))
 	}
 	if request.Model == "" && info != nil {
 		request.Model = info.UpstreamModelName
