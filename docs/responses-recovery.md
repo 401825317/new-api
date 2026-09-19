@@ -6,8 +6,9 @@ Base: `v0.13.1-patch.1`. Production is not modified by this branch.
 ## Scope
 
 - Enable with `RESPONSES_STREAM_RECOVERY_ENABLED=true` on an isolated service.
-- Only native streaming `POST /v1/responses` is in scope. Other endpoints and non-streaming requests retain official behavior.
-- Buffer structural `response.created` / `response.in_progress` / empty tool metadata preambles (256 KiB maximum). Do not commit or send pre-output metadata as semantic output.
+- Stream recovery only covers native streaming `POST /v1/responses`. Continuation routing also covers non-streaming Responses; other endpoints retain official behavior.
+- Buffer structural `response.created` / `response.in_progress` / empty tool metadata preambles. Do not commit or send pre-output metadata as semantic output. The ceiling defaults to 256 KiB (`RESPONSES_RECOVERY_PREAMBLE_LIMIT_KB`, range 256-16384).
+- Some upstreams echo the whole request (`tools`, `instructions`) inside both `response.created` and `response.in_progress`, so a legitimate preamble is roughly twice the request size. With the 256 KiB default, any request whose `tools`+`instructions` exceeds ~128 KiB fails with `responses_preoutput_buffer_exceeded`; raise the ceiling for those upstreams instead of disabling recovery. The buffer only ever holds a single request's preamble, so peak memory scales with concurrency times the configured ceiling.
 - Recognize `error`, `response.error`, `response.failed`, incomplete/cancelled responses, malformed events and missing successful terminal events.
 - Before downstream commitment: return transient failures to the recovery retry loop. 429, 500-503 and other transient 5xx may switch channel; 504/524 are excluded by default because the upstream may already have executed the request. Never retry the same channel within a request. Select the highest remaining eligible priority, weighted within that tier.
 - After commitment or reported usage: never replay inside the gateway. Forward the failure once, or synthesize a Responses error for a truncated stream. Committed `error` events use the standard top-level `code` / `message` shape that OpenClaw parses; `response.failed` retains its event type and receives the same status-bearing error message. This lets UClaw classify 429/5xx/timeout/network failures and perform its side-effect-safe delayed replacement without appending a second answer inside the already committed HTTP stream. Record failure separately from usage settlement.
@@ -20,6 +21,22 @@ Base: `v0.13.1-patch.1`. Production is not modified by this branch.
 - Redis mode shares cooldown between instances. Without Redis, cooldown is process-local and bounded to 10,000 routes. Do not use production Redis for the lab.
 
 ## Billing And Safety Limits
+
+### Continuation routing (2026-09-19)
+
+Successful completed Responses bind their response ID to the actual channel for one hour, before the terminal event is released. Bindings are scoped to user, selected group and original model; cache keys are hashed and no payload or API key is stored. Redis shares bindings when configured; otherwise the bounded 100,000-entry cache is process-local. This introduces cache writes on deployment, but no schema migration.
+
+Follow-up requests carrying `previous_response_id` consult the binding before ordinary affinity or weighted selection. Auto-group requests search only the user's currently usable groups. Disabled channels and removed group/model abilities fail closed. Cooldown does not redirect a known stateful binding: its original enabled channel remains the only valid target. Stateful requests cannot enter the generic cross-channel retry loop, even when streaming recovery is disabled.
+
+Multi-key channels are excluded because a channel ID alone cannot pin the credential. Configure separate single-key channels, and avoid rotating their credentials during active continuations. Unknown/expired IDs retain normal initial routing; this cache cannot restore upstream history, and requests replaying only encrypted input without `previous_response_id` do not use this binding. Provider-specific state rejection still needs the bounded thinking fallback or client recovery; this feature does not guarantee a reply during an upstream outage.
+
+Deployment recommendation: start `RESPONSES_RECOVERY_PREAMBLE_LIMIT_KB=1024` for large echoed tool payloads, budget concurrent buffering, and verify two successive requests reach the same single-key channel. No live deployment or environment change is performed by the local patch. Roll back continuation routing by restoring the prior image; the stream-recovery flag alone does not disable it. Cached bindings expire after one hour.
+
+The bounded thinking fallback uses the native DeepSeek adaptor's `reasoning.effort=none` mapping for V4 and V4.1, including `deepseek-v4.1-flash`, on an error-only HTTP 400 naming the missing reasoning state. The fallback and model-suffix conversion share version-bounded matching: `deepseek-v40-*`, `deepseek-v4.10-*` and unrelated aliases are excluded. It retries once with the same adaptor and credential, after parameter overrides, preserving the complete input and `previous_response_id`. It does not retry SSE failures, reported usage, committed output, or arbitrary OpenAI-compatible aliases. The user reports group 1 now uses DeepSeek channels; real upstream acceptance of thinking-off still requires a post-deployment check. `max_output_tokens` incomplete responses are not replayed and their limit is not silently raised.
+
+Release plan (2026-09-19): deploy only the independent `cf-global-newapi-official-B` service using the immutable image built from this branch. No new SQL, schema changes, manual Redis writes, or environment changes are required; application continuation-cache writes are described above. The preamble limit remains 256 KiB unless separately configured. Preserve the prior deployment `6aaba5b3fa283769e51c1a00` as the rollback target. Verify the new deployment, public health endpoint, build version and startup logs before declaring release success; live continuation and thinking-fallback checks remain separate from health checks.
+
+DeepSeek channel URL note: its Responses adaptor appends `/responses`, not `/v1/responses`. For the user's compatible upstream requiring `/v1/responses`, the user confirmed that a base URL ending in `/v1` passes the channel test. Do not apply this change indiscriminately to Chat requests: that adaptor appends `/v1/chat/completions` and could duplicate `/v1`.
 
 Pre-output failed attempts do not settle usage. The eventual successful attempt settles once. If all attempts fail, the existing billing session refunds its reservation. Partial failures retain reported usage; absent usage is not guessed for a failed stream. Successful streams without usage retain official text-token estimation.
 

@@ -15,12 +15,22 @@ import (
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/setting/reasoning"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
+	// This local compatibility retry is terminal on failure: it must not turn
+	// into a cross-channel replay through the controller's generic retry loop.
+	defer func() {
+		if newAPIError != nil && c.GetBool("responses_thinking_fallback_used") {
+			types.ErrOptionWithSkipRetry()(newAPIError)
+		}
+	}()
 	info.InitChannelMeta(c)
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
 		switch info.ApiType {
@@ -71,6 +81,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	}
 	adaptor.Init(info)
 	var requestBody io.Reader
+	var fallbackBody []byte
 	// Responses recovery must always pass through the adaptor conversion layer.
 	// Raw-body passthrough would bypass provider-bound state sanitization and
 	// reintroduce encrypted-content failures on fallback attempts.
@@ -110,10 +121,13 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 			println("requestBody: ", string(jsonData))
 		}
 		requestBody = bytes.NewBuffer(jsonData)
+		fallbackBody = jsonData
 	}
 
 	var httpResp *http.Response
-	resp, err := adaptor.DoRequest(c, info, requestBody)
+	resp, err := responsesRequestWithThinkingFallback(c, info, requestBody, fallbackBody, func(body io.Reader) (any, error) {
+		return adaptor.DoRequest(c, info, body)
+	})
 	if err != nil {
 		return types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
 	}
@@ -162,4 +176,90 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		service.PostTextConsumeQuota(c, info, usageDto, nil)
 	}
 	return nil
+}
+
+// responsesRequestWithThinkingFallback retries only a rejected HTTP request on
+// the already selected adaptor/credentials. It never reselects a channel or
+// mutates continuation/tool history. SSE failures lack sufficient evidence here
+// and are deliberately left to the existing response handler.
+func responsesRequestWithThinkingFallback(c *gin.Context, info *relaycommon.RelayInfo, body io.Reader, payload []byte, send func(io.Reader) (any, error)) (any, error) {
+	resp, err := send(body)
+	if err != nil || c == nil || info == nil || info.ChannelMeta == nil || c.Request.Context().Err() != nil || c.Writer.Written() {
+		return resp, err
+	}
+	if info.RelayMode != relayconstant.RelayModeResponses || info.ApiType != appconstant.APITypeDeepSeek || info.ChannelType != appconstant.ChannelTypeDeepSeek || c.GetBool("responses_thinking_fallback_used") {
+		return resp, nil
+	}
+	if info.ReceivedResponseCount != 0 || (info.ResponsesRecovery != nil && info.ResponsesRecovery.Committed) {
+		return resp, nil
+	}
+	// Only the native V4 adaptor defines Responses thinking-off as effort=none.
+	// A DeepSeek-looking alias on an arbitrary compatible gateway is not proof
+	// that the gateway implements this contract.
+	modelName := gjson.GetBytes(payload, "model").String()
+	if !gjson.ValidBytes(payload) || !reasoning.IsDeepSeekV4Model(modelName) || gjson.GetBytes(payload, "reasoning.effort").String() == "none" || gjson.GetBytes(payload, "thinking").Exists() || gjson.GetBytes(payload, "enable_thinking").Exists() {
+		return resp, nil
+	}
+	httpResp, ok := resp.(*http.Response)
+	if !ok || httpResp == nil || httpResp.StatusCode != http.StatusBadRequest || httpResp.Body == nil {
+		return resp, nil
+	}
+	const limit = 64 << 10
+	originalBody := httpResp.Body
+	errorBody, readErr := io.ReadAll(io.LimitReader(originalBody, limit+1))
+	// Restore every inspected byte for the ordinary error handler, including
+	// oversized/malformed bodies. Keep ownership of the original closer.
+	httpResp.Body = &responsesFallbackBody{Reader: io.MultiReader(bytes.NewReader(errorBody), originalBody), Closer: originalBody}
+	if readErr != nil || len(errorBody) > limit || !responsesThinkingRejection(errorBody) || c.Request.Context().Err() != nil {
+		return resp, nil
+	}
+	disabled, patchErr := sjson.SetBytes(payload, "reasoning.effort", "none")
+	if patchErr != nil {
+		return resp, nil
+	}
+	_ = httpResp.Body.Close()
+	c.Set("responses_thinking_fallback_used", true)
+	info.ReasoningEffort = "none"
+	info.BeginChannelAttempt()
+	return send(bytes.NewReader(disabled))
+}
+
+// responsesFallbackBody preserves response-body cleanup when inspection must
+// fall back to normal error handling; response contents must never be logged here.
+type responsesFallbackBody struct {
+	io.Reader
+	io.Closer
+}
+
+// responsesThinkingRejection accepts only an error-only envelope. Unknown
+// fields, any usage (even zero), or output fail closed instead of risking replay
+// of work already executed upstream. Only the protocol's specific missing-state
+// message authorizes changing the requested reasoning mode.
+func responsesThinkingRejection(body []byte) bool {
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() || !root.Get("error").IsObject() {
+		return false
+	}
+	allowed := true
+	root.ForEach(func(key, value gjson.Result) bool {
+		switch key.String() {
+		case "error", "request_id", "status", "status_code", "type":
+		default:
+			allowed = false
+		}
+		return allowed
+	})
+	root.Get("error").ForEach(func(key, value gjson.Result) bool {
+		switch key.String() {
+		case "message", "type", "code", "param":
+		default:
+			allowed = false
+		}
+		return allowed
+	})
+	message := strings.ToLower(strings.TrimSpace(root.Get("error.message").String()))
+	return allowed && strings.Contains(message, "the reasoning_text in the thinking mode must be passed back to the api")
 }

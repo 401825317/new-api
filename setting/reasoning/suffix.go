@@ -35,9 +35,20 @@ func ParseOpenAIReasoningEffortFromModelSuffix(modelName string) (string, string
 	return effort, baseModel
 }
 
+// IsDeepSeekV4Model identifies the V4 and V4.1 families supported by the native
+// adaptor. Version boundaries prevent similarly named aliases from opting in.
+func IsDeepSeekV4Model(modelName string) bool {
+	for _, prefix := range []string{"deepseek-v4-", "deepseek-v4.1-"} {
+		if strings.HasPrefix(modelName, prefix) && len(modelName) > len(prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func ParseDeepSeekV4ThinkingSuffix(modelName string) (baseModel string, thinkingType string, effort string, ok bool) {
 	baseModel, suffix, ok := TrimEffortSuffixWithSuffixes(modelName, DeepSeekV4EffortSuffixes)
-	if !ok || !strings.HasPrefix(baseModel, "deepseek-v4-") {
+	if !ok || !IsDeepSeekV4Model(baseModel) {
 		return modelName, "", "", false
 	}
 	switch suffix {

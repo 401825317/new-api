@@ -30,6 +30,38 @@ func TestResponsesRecoveryFullRelay(t *testing.T) {
 	}
 }
 
+func TestResponsesContinuationRouting(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	oldRedis, oldMemory := common.RedisEnabled, common.MemoryCacheEnabled
+	common.RedisEnabled, common.MemoryCacheEnabled = false, false
+	t.Cleanup(func() { common.RedisEnabled, common.MemoryCacheEnabled = oldRedis, oldMemory })
+	group := fmt.Sprintf("continuation-%d", time.Now().UnixNano())
+	channel := model.Channel{Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "continuation", Key: "mock", Models: "deepseek-test", Group: group}
+	require.NoError(t, channel.Insert())
+	service.RecordResponsesContinuation("42/"+group, "deepseek-test", "resp-first", channel.Id)
+	newContext := func(user int) *gin.Context {
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"previous_response_id":"resp-first"}`))
+		common.SetContextKey(ctx, constant.ContextKeyUserId, user)
+		return ctx
+	}
+	selected, selectedGroup, err := service.SelectResponsesContinuation(newContext(42), group, "deepseek-test")
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	require.Equal(t, channel.Id, selected.Id)
+	require.Equal(t, group, selectedGroup)
+	selected, _, err = service.SelectResponsesContinuation(newContext(43), group, "deepseek-test")
+	require.NoError(t, err)
+	require.Nil(t, selected, "another user must not inherit the binding")
+	selected, _, err = service.SelectResponsesContinuation(newContext(42), group, "other-model")
+	require.NoError(t, err)
+	require.Nil(t, selected)
+	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channel.Id).Update("status", common.ChannelStatusManuallyDisabled).Error)
+	selected, _, err = service.SelectResponsesContinuation(newContext(42), group, "deepseek-test")
+	require.Error(t, err)
+	require.Nil(t, selected, "a disabled bound route must not silently change credentials")
+}
+
 func TestShouldRetryResponsesRecoveryTransientFailures(t *testing.T) {
 	t.Setenv("RESPONSES_STREAM_RECOVERY_ENABLED", "true")
 	newContext := func() *gin.Context {

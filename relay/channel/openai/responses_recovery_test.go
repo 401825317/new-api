@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -264,4 +266,107 @@ func TestResponsesRecoveryMultiline(t *testing.T) {
 	_, _, u, err := runRecovery(io.NopCloser(strings.NewReader(body)), context.Background(), "")
 	require.Nil(t, err)
 	require.Equal(t, 12, u.TotalTokens)
+}
+
+// largePreambleFrame emulates an upstream that echoes the request payload
+// (tools + instructions) back inside response.created / response.in_progress.
+// The echoed blob lands in a field the recovery classifier treats as
+// structural, so it is buffered rather than released to the client.
+func largePreambleFrame(event string, payloadBytes int) string {
+	return fmt.Sprintf("data: {\"type\":%q,\"response\":{\"status\":\"in_progress\",\"output\":[],\"instructions\":%q}}\n\n",
+		event, strings.Repeat("x", payloadBytes))
+}
+
+func TestRecoveryPreambleLimitBytes(t *testing.T) {
+	t.Setenv("RESPONSES_RECOVERY_PREAMBLE_LIMIT_KB", "256")
+	t.Run("default_is_256KiB", func(t *testing.T) {
+		require.Equal(t, 256<<10, recoveryPreambleLimitBytes())
+	})
+	t.Run("below_floor_is_clamped_up", func(t *testing.T) {
+		t.Setenv("RESPONSES_RECOVERY_PREAMBLE_LIMIT_KB", "1")
+		require.Equal(t, 256<<10, recoveryPreambleLimitBytes())
+	})
+	t.Run("above_ceiling_is_clamped_down", func(t *testing.T) {
+		t.Setenv("RESPONSES_RECOVERY_PREAMBLE_LIMIT_KB", "999999")
+		require.Equal(t, 16384<<10, recoveryPreambleLimitBytes())
+	})
+	t.Run("explicit_value_is_honoured", func(t *testing.T) {
+		t.Setenv("RESPONSES_RECOVERY_PREAMBLE_LIMIT_KB", "1024")
+		require.Equal(t, 1024<<10, recoveryPreambleLimitBytes())
+	})
+}
+
+// An upstream that echoes tools+instructions twice produces a preamble roughly
+// twice the request size. This is the production incident shape: ~400 KiB of
+// structural preamble used to be a guaranteed 502 on the fixed 256 KiB ceiling.
+func TestResponsesRecoveryPreambleLimitIsConfigurable(t *testing.T) {
+	t.Setenv("RESPONSES_RECOVERY_PREAMBLE_LIMIT_KB", "256")
+	gin.SetMode(gin.TestMode)
+	const payload = 200 << 10
+	body := largePreambleFrame("response.created", payload) +
+		largePreambleFrame("response.in_progress", payload) +
+		recoveryDelta + recoveryCompleted
+
+	t.Run("default_ceiling_rejects_oversized_preamble", func(t *testing.T) {
+		w, info, _, err := runRecovery(io.NopCloser(strings.NewReader(body)), context.Background(), "")
+		require.NotNil(t, err)
+		require.Equal(t, http.StatusBadGateway, err.StatusCode)
+		require.False(t, info.ResponsesRecovery.Committed)
+		require.True(t, info.ResponsesRecovery.Penalize)
+		require.Contains(t, info.ResponsesRecovery.Error.Error(), "exceeded recovery buffer")
+		require.Empty(t, w.Body.String())
+	})
+
+	t.Run("raised_ceiling_admits_the_same_preamble", func(t *testing.T) {
+		t.Setenv("RESPONSES_RECOVERY_PREAMBLE_LIMIT_KB", "1024")
+		w, info, usage, err := runRecovery(io.NopCloser(strings.NewReader(body)), context.Background(), "")
+		require.Nil(t, err)
+		require.Nil(t, info.ResponsesRecovery.Error)
+		require.True(t, info.ResponsesRecovery.Committed)
+		require.Contains(t, w.Body.String(), "response.completed")
+		require.Equal(t, 12, usage.TotalTokens)
+	})
+}
+
+func TestRecordResponsesContinuation(t *testing.T) {
+	oldRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = oldRedis })
+	info := &relaycommon.RelayInfo{UserId: 42, UsingGroup: t.Name(), OriginModelName: "deepseek-test", ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 27}}
+	response := &dto.OpenAIResponsesResponse{ID: "resp-first", Status: []byte(`"completed"`)}
+	recordResponsesContinuation(info, response)
+	require.Equal(t, 27, service.GetResponsesContinuationChannel("42/"+t.Name(), "deepseek-test", "resp-first"))
+	response.ID, response.Status = "resp-failed", []byte(`"failed"`)
+	recordResponsesContinuation(info, response)
+	require.Zero(t, service.GetResponsesContinuationChannel("42/"+t.Name(), "deepseek-test", "resp-failed"))
+	response.ID, response.Status = "resp-multi", []byte(`"completed"`)
+	info.ChannelIsMultiKey = true
+	recordResponsesContinuation(info, response)
+	require.Zero(t, service.GetResponsesContinuationChannel("42/"+t.Name(), "deepseek-test", "resp-multi"))
+}
+
+func TestResponsesHandlersRecordContinuation(t *testing.T) {
+	oldRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = oldRedis })
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream_%t", stream), func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+			info := &relaycommon.RelayInfo{UserId: 42, UsingGroup: t.Name(), OriginModelName: "deepseek-test", StartTime: time.Now(), ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 38}}
+			body := `{"id":"resp-handler","status":"completed","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}`
+			if stream {
+				body = "data: {\"type\":\"response.completed\",\"response\":" + body + "}\n\n"
+			}
+			response := &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+			var err *types.NewAPIError
+			if stream {
+				_, err = responsesRecoveryStream(ctx, info, response)
+			} else {
+				_, err = OaiResponsesHandler(ctx, info, response)
+			}
+			require.Nil(t, err)
+			require.Equal(t, 38, service.GetResponsesContinuationChannel("42/"+t.Name(), "deepseek-test", "resp-handler"))
+		})
+	}
 }

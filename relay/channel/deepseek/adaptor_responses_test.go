@@ -97,6 +97,23 @@ func TestConvertOpenAIResponsesRequestPreservesDeepSeekReasoningText(t *testing.
 	require.Equal(t, "medium", got.Reasoning.Effort)
 }
 
+func TestConvertResponsesV41ThinkingSuffix(t *testing.T) {
+	for _, suffix := range []string{"none", "max"} {
+		t.Run(suffix, func(t *testing.T) {
+			modelName := "deepseek-v4.1-flash-" + suffix
+			request := dto.OpenAIResponsesRequest{Model: modelName, PreviousResponseID: "resp_previous", Input: json.RawMessage(`"continue"`)}
+			info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelType: constant.ChannelTypeDeepSeek, UpstreamModelName: modelName}}
+			converted, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(nil, info, request)
+			require.NoError(t, err)
+			got := converted.(dto.OpenAIResponsesRequest)
+			require.Equal(t, "deepseek-v4.1-flash", got.Model)
+			require.Equal(t, suffix, got.Reasoning.Effort)
+			require.Equal(t, "resp_previous", got.PreviousResponseID)
+			require.Equal(t, request.Input, got.Input)
+		})
+	}
+}
+
 func TestStripForeignResponsesStateLeavesStringInputUntouched(t *testing.T) {
 	request := dto.OpenAIResponsesRequest{Input: json.RawMessage(`"hello"`)}
 	original := append(json.RawMessage(nil), request.Input...)

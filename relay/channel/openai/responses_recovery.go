@@ -239,6 +239,30 @@ func recoveryUsage(r *dto.OpenAIResponsesResponse, u *dto.Usage) {
 	}
 }
 
+// recoveryPreambleLimitBytes resolves the structural-preamble buffer ceiling.
+//
+// Some upstreams repeat the whole request payload (notably `tools` and
+// `instructions`) inside both response.created and response.in_progress, which
+// makes a legitimate preamble about twice the size of the request body. The
+// previous fixed 256 KiB ceiling turned any request whose tools+instructions
+// exceeded ~128 KiB into a guaranteed 502 on those upstreams, so the ceiling is
+// now configurable.
+//
+// RESPONSES_RECOVERY_PREAMBLE_LIMIT_KB is clamped to 256 KiB..16 MiB: the lower
+// bound keeps the historical default behaviour intact, and the upper bound caps
+// per-request buffering so a hostile or broken upstream cannot grow the buffer
+// without limit. The buffer only ever holds one request's preamble.
+func recoveryPreambleLimitBytes() int {
+	kb := common.GetEnvOrDefault("RESPONSES_RECOVERY_PREAMBLE_LIMIT_KB", 256)
+	if kb < 256 {
+		kb = 256
+	}
+	if kb > 16384 {
+		kb = 16384
+	}
+	return kb << 10
+}
+
 // responsesStructuralPreamble reports whether an event only describes the
 // structure/lifecycle of a response and can therefore remain buffered before
 // the first client-consumable output. Some upstreams emit output-item and
@@ -385,6 +409,12 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	var pending []recoveryFrame
 	pendingBytes := 0
 	pendingDiagnosticLogged := false
+	// Some upstreams echo the full request (tools + instructions) back inside
+	// both response.created and response.in_progress, so the structural
+	// preamble can legitimately reach ~2x the request payload size. The limit
+	// is therefore tunable instead of fixed, and only the memory of this one
+	// request grows with it.
+	preambleLimitBytes := recoveryPreambleLimitBytes()
 	sequence := int64(-1)
 	commit := func(eventType string) {
 		if !outcome.Committed {
@@ -506,12 +536,12 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 			isPreamble := responsesStructuralPreamble(f.data, event.Type, usage) || (!terminal && !responsesEventHasConsumableOutput(f.data, usage))
 			prospectiveFrames := len(pending) + 1
 			prospectiveBytes := pendingBytes + len(f.data)
-			if !outcome.Committed && isPreamble && !pendingDiagnosticLogged && (prospectiveFrames > 10 || prospectiveBytes > 128<<10) {
+			if !outcome.Committed && isPreamble && !pendingDiagnosticLogged && (prospectiveFrames > 10 || prospectiveBytes > preambleLimitBytes/2) {
 				pendingDiagnosticLogged = true
 				logger.LogInfo(c, fmt.Sprintf("responses recovery: buffering structural preamble frames=%d bytes=%d", prospectiveFrames, prospectiveBytes))
 			}
 			if !outcome.Committed && isPreamble {
-				if prospectiveBytes <= 256<<10 {
+				if prospectiveBytes <= preambleLimitBytes {
 					pending = append(pending, f)
 					pendingBytes = prospectiveBytes
 					continue
@@ -520,6 +550,9 @@ func responsesRecoveryStream(c *gin.Context, info *relaycommon.RelayInfo, resp *
 				// large. Keep the client stream untouched and let the outer
 				// recovery loop try the next eligible channel.
 				return fail(types.NewOpenAIError(fmt.Errorf("Responses structural preamble exceeded recovery buffer"), types.ErrorCodeBadResponse, 502), "responses_preoutput_buffer_exceeded", true, nil)
+			}
+			if terminal {
+				recordResponsesContinuation(info, event.Response)
 			}
 			if flush(event.Type) != nil {
 				return clientGone()

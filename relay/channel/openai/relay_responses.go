@@ -17,6 +17,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// recordResponsesContinuation stores only routing metadata, scoped to the user,
+// group and original model. Rotating multi-key channels cannot guarantee continuity.
+func recordResponsesContinuation(info *relaycommon.RelayInfo, response *dto.OpenAIResponsesResponse) {
+	if info == nil || info.ChannelMeta == nil || info.ChannelIsMultiKey || response == nil || string(response.Status) != `"completed"` {
+		return
+	}
+	service.RecordResponsesContinuation(fmt.Sprintf("%d/%s", info.UserId, info.UsingGroup), info.OriginModelName, response.ID, info.ChannelId)
+}
+
 func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	defer service.CloseResponseBodyGracefully(resp)
 
@@ -40,6 +49,7 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		c.Set("image_generation_call_size", responsesResponse.GetSize())
 	}
 
+	recordResponsesContinuation(info, &responsesResponse)
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
@@ -90,6 +100,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			logger.LogError(c, "failed to unmarshal stream response: "+err.Error())
 			sr.Error(err)
 			return
+		}
+		if streamResponse.Type == "response.completed" || streamResponse.Type == "response.done" {
+			recordResponsesContinuation(info, streamResponse.Response)
 		}
 		sendResponsesStreamData(c, streamResponse, data)
 		switch streamResponse.Type {

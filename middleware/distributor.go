@@ -101,7 +101,12 @@ func Distribute() func(c *gin.Context) {
 					}
 				}
 
-				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
+				channel, selectGroup, err = service.SelectResponsesContinuation(c, usingGroup, modelRequest.Model)
+				if err != nil {
+					abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "Responses continuation route unavailable")
+					return
+				}
+				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); channel == nil && found {
 					preferred, err := model.CacheGetChannel(preferredChannelID)
 					if err == nil && preferred != nil {
 						if preferred.Status != common.ChannelStatusEnabled {

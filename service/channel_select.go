@@ -81,6 +81,9 @@ func (p *RetryParam) ResetRetryNextTry() {
 //	Retry=3: GroupB, priority1 (startRetryIndex=2, priorityRetry=1)
 //	         分组B, 优先级1
 func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
+	if channel, group, err := SelectResponsesContinuation(param.Ctx, param.TokenGroup, param.ModelName); channel != nil || err != nil {
+		return channel, group, err
+	}
 	var channel *model.Channel
 	var err error
 	selectGroup := param.TokenGroup

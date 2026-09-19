@@ -343,7 +343,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
 	recoveryEnabled := service.ResponsesRecoveryEnabled(c)
-	if recoveryEnabled && (c.Request.Context().Err() != nil || c.Writer.Written() || c.GetBool("responses_recovery_stateful")) {
+	if c.GetBool("responses_recovery_stateful") || (recoveryEnabled && (c.Request.Context().Err() != nil || c.Writer.Written())) {
 		return false
 	}
 	if openaiErr == nil {

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"hash/fnv"
 	"regexp"
@@ -10,7 +11,9 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/cachex"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -28,11 +31,16 @@ const (
 
 	channelAffinityCacheNamespace           = "new-api:channel_affinity:v1"
 	channelAffinityUsageCacheStatsNamespace = "new-api:channel_affinity_usage_cache_stats:v1"
+
+	responsesContinuationCacheNamespace = "new-api:responses_continuation:v1"
 )
 
 var (
 	channelAffinityCacheOnce sync.Once
 	channelAffinityCache     *cachex.HybridCache[int]
+
+	responsesContinuationCacheOnce sync.Once
+	responsesContinuationCache     *cachex.HybridCache[int]
 
 	channelAffinityUsageCacheStatsOnce  sync.Once
 	channelAffinityUsageCacheStatsCache *cachex.HybridCache[ChannelAffinityUsageCacheCounters]
@@ -106,6 +114,93 @@ func getChannelAffinityCache() *cachex.HybridCache[int] {
 		})
 	})
 	return channelAffinityCache
+}
+
+// responsesContinuationCache stores response.id -> channel id bindings so a
+// follow-up request carrying previous_response_id can stick to the channel
+// that produced the previous turn. Provider-bound state may depend on the
+// issuing credential; matching a model name does not establish compatibility.
+func getResponsesContinuationCache() *cachex.HybridCache[int] {
+	responsesContinuationCacheOnce.Do(func() {
+		responsesContinuationCache = cachex.NewHybridCache[int](cachex.HybridCacheConfig[int]{
+			Namespace: cachex.Namespace(responsesContinuationCacheNamespace),
+			Redis:     common.RDB,
+			RedisEnabled: func() bool {
+				return common.RedisEnabled && common.RDB != nil
+			},
+			RedisCodec: cachex.IntCodec{},
+			Memory: func() *hot.HotCache[string, int] {
+				return hot.NewHotCache[string, int](hot.LRU, 100_000).
+					WithTTL(time.Hour).
+					WithJanitor().
+					Build()
+			},
+		})
+	})
+	return responsesContinuationCache
+}
+
+func responsesContinuationKey(usingGroup, modelName, responseID string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(usingGroup+"\x00"+modelName+"\x00"+responseID)))
+}
+
+// SelectResponsesContinuation resolves an existing response binding before ordinary
+// affinity. A binding is routing metadata, never permission to use a disabled route.
+func SelectResponsesContinuation(c *gin.Context, group, modelName string) (*model.Channel, string, error) {
+	if c == nil || c.Request == nil || c.Request.Method != "POST" || c.Request.URL.Path != "/v1/responses" {
+		return nil, group, nil
+	}
+	previous := extractChannelAffinityValue(c, operation_setting.ChannelAffinityKeySource{Type: "gjson", Path: "previous_response_id"})
+	groups := []string{group}
+	if group == "auto" {
+		groups = GetUserAutoGroup(common.GetContextKeyString(c, constant.ContextKeyUserGroup))
+	}
+	for _, candidateGroup := range groups {
+		id := GetResponsesContinuationChannel(fmt.Sprintf("%d/%s", common.GetContextKeyInt(c, constant.ContextKeyUserId), candidateGroup), modelName, previous)
+		if id == 0 {
+			continue
+		}
+		channel, err := model.CacheGetChannel(id)
+		if err != nil {
+			return nil, candidateGroup, err
+		}
+		if channel == nil || channel.Status != common.ChannelStatusEnabled || channel.ChannelInfo.IsMultiKey || !model.IsChannelEnabledForGroupModel(candidateGroup, modelName, id) {
+			return nil, candidateGroup, fmt.Errorf("Responses continuation route unavailable")
+		}
+		if group == "auto" {
+			common.SetContextKey(c, constant.ContextKeyAutoGroup, candidateGroup)
+		}
+		return channel, candidateGroup, nil
+	}
+	return nil, group, nil
+}
+
+// RecordResponsesContinuation binds an upstream response id to the channel
+// that produced it. Safe to call with empty response ids (no-op).
+func RecordResponsesContinuation(usingGroup, modelName, responseID string, channelID int) {
+	responseID = strings.TrimSpace(responseID)
+	if responseID == "" || channelID <= 0 {
+		return
+	}
+	key := responsesContinuationKey(strings.TrimSpace(usingGroup), strings.TrimSpace(modelName), responseID)
+	if err := getResponsesContinuationCache().SetWithTTL(key, channelID, time.Hour); err != nil {
+		common.SysError("responses continuation cache set failed")
+	}
+}
+
+// GetResponsesContinuationChannel returns the channel that signed responseID,
+// or 0 when there is no binding (first turn, expired, or unknown id).
+func GetResponsesContinuationChannel(usingGroup, modelName, responseID string) int {
+	responseID = strings.TrimSpace(responseID)
+	if responseID == "" {
+		return 0
+	}
+	key := responsesContinuationKey(strings.TrimSpace(usingGroup), strings.TrimSpace(modelName), responseID)
+	channelID, found, err := getResponsesContinuationCache().Get(key)
+	if err != nil || !found {
+		return 0
+	}
+	return channelID
 }
 
 func GetChannelAffinityCacheStats() ChannelAffinityCacheStats {
