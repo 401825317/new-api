@@ -261,5 +261,7 @@ func responsesThinkingRejection(body []byte) bool {
 		return allowed
 	})
 	message := strings.ToLower(strings.TrimSpace(root.Get("error.message").String()))
-	return allowed && strings.Contains(message, "the reasoning_text in the thinking mode must be passed back to the api")
+	message = strings.ReplaceAll(message, "`", "")
+	return allowed && (strings.Contains(message, "the reasoning_text in the thinking mode must be passed back to the api") ||
+		strings.Contains(message, "the reasoning_content in the thinking mode must be passed back to the api"))
 }

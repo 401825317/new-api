@@ -5,6 +5,14 @@ Base: `v0.13.1-patch.1`. Production is not modified by this branch.
 
 ## Scope
 
+### 2026-09-19 missing-state follow-up
+
+The HTTP 400 thinking fallback now recognizes both `reasoning_text` and `reasoning_content`, including backtick-quoted field names and upstream error prefixes. Live channel 27 errors used the latter spelling, which the prior release did not recognize. The same-channel, same-credential, one-retry boundary and error-only envelope checks remain unchanged. Regression tests reproduce the previously missed variants and exclude context-limit errors and responses containing usage or output.
+
+This correction does not fix context exhaustion: a request can first fail missing-state validation on channel 27 and then exceed the context limit on channel 38. Do not silently drop conversation/tool history or replay context-limit failures with unchanged input. Actual input size and the upstream treatment of replayed reasoning still require separate verification.
+
+Deployment increment: official-B application image only; no new SQL, Redis administration, or environment changes. This follow-up requires a new build/deployment and live verification of channel 27 accepting the thinking-off retry before it can be reported as resolved. Roll back to the immediately preceding immutable image if verification fails.
+
 - Enable with `RESPONSES_STREAM_RECOVERY_ENABLED=true` on an isolated service.
 - Stream recovery only covers native streaming `POST /v1/responses`. Continuation routing also covers non-streaming Responses; other endpoints retain official behavior.
 - Buffer structural `response.created` / `response.in_progress` / empty tool metadata preambles. Do not commit or send pre-output metadata as semantic output. The ceiling defaults to 256 KiB (`RESPONSES_RECOVERY_PREAMBLE_LIMIT_KB`, range 256-16384).

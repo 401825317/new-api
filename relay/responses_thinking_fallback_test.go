@@ -20,6 +20,43 @@ import (
 const thinkingRejection = `{"error":{"type":"invalid_request_error","message":"The reasoning_text in the thinking mode must be passed back to the API"}}`
 const thinkingPayload = `{"model":"deepseek-v4-pro","reasoning":{"effort":"high"},"previous_response_id":"resp_previous","input":[{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`
 
+func TestResponsesThinkingFallbackMissingStateVariants(t *testing.T) {
+	for _, field := range []string{"reasoning_text", "reasoning_content"} {
+		for _, quoted := range []bool{false, true} {
+			fieldName := field
+			if quoted {
+				fieldName = "`" + field + "`"
+			}
+			t.Run(fieldName, func(t *testing.T) {
+				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+				info := &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeResponses, ChannelMeta: &relaycommon.ChannelMeta{
+					ApiType: constant.APITypeDeepSeek, ChannelType: constant.ChannelTypeDeepSeek, ChannelId: 27,
+				}}
+				payload := []byte(strings.ReplaceAll(thinkingPayload, "deepseek-v4-pro", "deepseek-v4.1-flash"))
+				errorBody := strings.Replace(thinkingRejection, "The reasoning_text", "Upstream request failed: [invalid_request_error] The "+fieldName, 1)
+				calls := 0
+				result, err := responsesRequestWithThinkingFallback(ctx, info, bytes.NewReader(payload), payload, func(body io.Reader) (any, error) {
+					calls++
+					data, readErr := io.ReadAll(body)
+					require.NoError(t, readErr)
+					require.Equal(t, 27, info.ChannelId)
+					require.Equal(t, "resp_previous", gjson.GetBytes(data, "previous_response_id").String())
+					require.JSONEq(t, gjson.GetBytes(payload, "input").Raw, gjson.GetBytes(data, "input").Raw)
+					if calls == 1 {
+						return &http.Response{StatusCode: 400, Body: io.NopCloser(strings.NewReader(errorBody))}, nil
+					}
+					require.Equal(t, "none", gjson.GetBytes(data, "reasoning.effort").String())
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+				})
+				require.NoError(t, err)
+				require.Equal(t, 2, calls)
+				require.Equal(t, 200, result.(*http.Response).StatusCode)
+			})
+		}
+	}
+}
+
 // TestResponsesThinkingFallback exercises the actual send boundary: no channel
 // selection occurs, only the final payload's effort changes, and a second
 // rejection cannot recursively replay tool/continuation history.
@@ -65,7 +102,7 @@ func TestResponsesThinkingFallback(t *testing.T) {
 // TestResponsesThinkingFallbackGuards verifies fail-closed evidence and checks
 // that inspected error bodies remain readable by the ordinary error handler.
 func TestResponsesThinkingFallbackGuards(t *testing.T) {
-	for _, scenario := range []string{"ordinary400", "usage", "output", "malformed", "oversized", "sse", "500", "compatible", "unknownModel", "disabled", "written", "committed", "received", "cancelled", "used", "compact"} {
+	for _, scenario := range []string{"ordinary400", "contextLimit", "contentUsage", "contentOutput", "usage", "output", "malformed", "oversized", "sse", "500", "compatible", "unknownModel", "disabled", "written", "committed", "received", "cancelled", "used", "compact"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -78,6 +115,12 @@ func TestResponsesThinkingFallbackGuards(t *testing.T) {
 			switch scenario {
 			case "ordinary400":
 				errorBody = `{"error":{"message":"invalid reasoning_text"}}`
+			case "contextLimit":
+				errorBody = `{"error":{"message":"Input exceeds the context limit (1048566 tokens). Please shorten the input."}}`
+			case "contentUsage":
+				errorBody = strings.ReplaceAll(thinkingRejection[:len(thinkingRejection)-1], "reasoning_text", "`reasoning_content`") + `,"usage":{"total_tokens":0}}`
+			case "contentOutput":
+				errorBody = strings.ReplaceAll(thinkingRejection[:len(thinkingRejection)-1], "reasoning_text", "`reasoning_content`") + `,"output":[{"text":"done"}]}`
 			case "usage":
 				errorBody = thinkingRejection[:len(thinkingRejection)-1] + `,"usage":{"total_tokens":0}}`
 			case "output":
